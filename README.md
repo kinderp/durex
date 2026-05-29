@@ -4,8 +4,6 @@
 
 The idea is simple: instead of launching Codex manually every time, you prepare a queue of jobs and leave the program running, even overnight.
 
----
-
 ## What it is for
 
 It can be used to:
@@ -18,8 +16,6 @@ It can be used to:
 - make use of overnight usage windows;
 - suspend a task when Codex reaches a usage limit;
 - automatically retry after the reset.
-
----
 
 ## General structure
 
@@ -49,8 +45,6 @@ Meaning:
 | `COMPLETED` | The task completed successfully |
 | `FAILED` | The task failed permanently |
 
----
-
 ## Requirements
 
 You need:
@@ -78,8 +72,6 @@ If the command is not called `codex`, open `codex_queue.py` and edit this line:
 CODEX_BIN = "codex"
 ```
 
----
-
 ## Installation
 
 Download or copy the file:
@@ -99,8 +91,6 @@ You can still use it like this:
 ```bash
 python3 codex_queue.py
 ```
-
----
 
 ## First run
 
@@ -122,8 +112,6 @@ This will create the file:
 codex_tasks.db
 ```
 
----
-
 ## Add example tasks
 
 You can load three example tasks:
@@ -144,8 +132,6 @@ This adds tasks such as:
 2. generate tests;
 3. create a final report.
 
----
-
 ## Show the task list
 
 ```bash
@@ -159,8 +145,6 @@ Example output:
 [2] Generate missing automated tests | status=PENDING | priority=2 | attempts=0 | reset_at=None | workdir=/Users/antonio/projects/student_A
 [3] Create final report | status=PENDING | priority=3 | attempts=0 | reset_at=None | workdir=/Users/antonio/projects/student_A
 ```
-
----
 
 ## Start the worker
 
@@ -178,8 +162,6 @@ The program:
 4. moves to the next task;
 5. if it detects a usage limit, it pauses the task;
 6. retries after `reset_at`.
-
----
 
 ## Overnight run
 
@@ -202,8 +184,6 @@ To watch the log:
 tail -f codex_queue.log
 ```
 
----
-
 ## Add a task manually
 
 Simple example:
@@ -216,8 +196,6 @@ python3 codex_queue.py add \
   --prompt "Run the tests, grade the assignment, and generate report_student_B.md"
 ```
 
----
-
 ## More complete grading example
 
 ```bash
@@ -227,8 +205,6 @@ python3 codex_queue.py add \
   --priority 1 \
   --prompt "You are an impartial grader. Read the code in the current directory. Run the tests. Evaluate using this rubric: correctness 0-4, code quality 0-2, error handling 0-2, clarity 0-2. Create a file report_mario_rossi.md with the grade, reasoning for each criterion, and final evaluation."
 ```
-
----
 
 ## Priority
 
@@ -252,8 +228,6 @@ python3 codex_queue.py add \
   --priority 1
 ```
 
----
-
 ## Stop when there are no tasks
 
 By default, the worker keeps running forever.
@@ -266,8 +240,6 @@ python3 codex_queue.py run --stop-when-empty
 
 Useful for quick tests.
 
----
-
 ## Change the check interval
 
 By default, it checks every 60 seconds.
@@ -277,8 +249,6 @@ To check every 5 minutes:
 ```bash
 python3 codex_queue.py run --interval 300
 ```
-
----
 
 ## How it handles usage limits
 
@@ -320,8 +290,6 @@ if not reset_at:
 
 You can change `5` to another value.
 
----
-
 ## Task resume
 
 If the script finds a `session_id`, it tries to resume using:
@@ -337,8 +305,6 @@ Note: `session_id` detection depends on Codex output format. If Codex prints the
 ```python
 extract_session_id()
 ```
-
----
 
 ## Where the output is stored
 
@@ -357,8 +323,6 @@ reports/task_1.md
 reports/task_2.md
 reports/task_3.md
 ```
-
----
 
 ## Inspect the database manually
 
@@ -379,8 +343,6 @@ To exit:
 ```sql
 .quit
 ```
-
----
 
 ## Recommended structure for assignment grading
 
@@ -404,8 +366,6 @@ priority=2   individual reports
 priority=3   final report
 priority=4   software improvements
 ```
-
----
 
 ## Example workflow
 
@@ -433,8 +393,6 @@ python3 codex_queue.py add \
 nohup python3 codex_queue.py run > codex_queue.log 2>&1 &
 ```
 
----
-
 ## Limits of this version
 
 This is a simple local version.
@@ -460,7 +418,6 @@ For a professional version, you could add:
 - management of multiple classes and students;
 - grading rubrics loaded from YAML/JSON files.
 
----
 
 ## Common issues
 
@@ -486,8 +443,6 @@ with something like:
 CODEX_BIN = "/usr/local/bin/codex"
 ```
 
----
-
 ### 2. Working directory does not exist
 
 Possible error:
@@ -507,8 +462,6 @@ python3 codex_queue.py add \
   --prompt "Analyze the project"
 ```
 
----
-
 ### 3. The task stays in WAITING_LIMIT
 
 Check the date:
@@ -519,8 +472,6 @@ python3 codex_queue.py list
 
 If `reset_at` is in the future, this is normal.
 
----
-
 ### 4. The task fails immediately
 
 Check the log:
@@ -530,8 +481,6 @@ tail -f codex_queue.log
 ```
 
 Or open SQLite and inspect `last_error`.
-
----
 
 ## Practical advice
 
