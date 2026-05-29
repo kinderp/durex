@@ -2,73 +2,134 @@
 """
 codex_queue.py
 
-Piccolo orchestratore per Codex CLI.
+This script is a small "orchestrator" for Codex CLI.
 
-Obiettivo:
-- salvare una lista di task in SQLite;
-- eseguirli con `codex exec`;
-- sospenderli se viene raggiunto un usage limit;
-- riprenderli dopo l'orario di reset;
-- provare a usare `codex exec resume` se è disponibile un session_id.
+What is it for?
+---------------
+It lets you create a queue of tasks to be executed by Codex, for example:
 
-Nota importante:
-Il formato preciso degli errori e dei session_id può cambiare in base alla versione
-CLI/servizio. Per questo le funzioni `extract_session_id()` e `extract_reset_at()`
-usano pattern generici e potrebbero richiedere piccoli adattamenti.
+- grading student assignments;
+- generating automated tests;
+- producing reports;
+- resuming interrupted work;
+- suspending a task when a usage limit is reached;
+- retrying automatically after the usage limit resets.
+
+General idea
+------------
+Instead of launching Codex manually every time, this program stores tasks
+in a local SQLite database.
+
+Each task has a status:
+
+- PENDING        -> the task is waiting to be executed;
+- RUNNING        -> the task is currently running;
+- WAITING_LIMIT  -> Codex reached a usage limit and the task is waiting for reset;
+- COMPLETED      -> the task completed successfully;
+- FAILED         -> the task failed permanently.
+
+You can leave this script running overnight.
+When Codex becomes available again, the script automatically resumes ready tasks.
 """
 
+# argparse is used to create terminal commands, for example:
+# python codex_queue.py init
+# python codex_queue.py add ...
+# python codex_queue.py run
 import argparse
+
+# datetime is used to manage timestamps, dates, and limit reset times.
 import datetime as dt
+
+# os is not strictly required here, but it can be useful if you later expand
+# the script with environment variables.
+import os
+
+# re is used to search inside Codex output for words such as:
+# "usage limit", "429", "resets_at", etc.
 import re
+
+# sqlite3 is used to store data in a local database without installing
+# PostgreSQL or MySQL. The database file will be codex_tasks.db.
 import sqlite3
+
+# subprocess is used to launch Codex CLI from Python.
+# In practice, Python runs commands like:
+# codex exec "prompt..."
+# codex exec resume "session_id" "continue..."
 import subprocess
+
+# time is used to pause between one check and the next.
 import time
+
+# pathlib makes filesystem path handling cleaner.
 from pathlib import Path
 
+
 # ---------------------------------------------------------------------------
-# CONFIGURAZIONE BASE
+# BASIC CONFIGURATION
 # ---------------------------------------------------------------------------
 
-# File SQLite locale in cui salviamo tutti i task.
+# Name of the SQLite file where tasks are stored.
 DB_PATH = "codex_tasks.db"
 
-# Comando Codex CLI. Se sul tuo sistema il binario ha un altro nome/percorso,
-# modifica questa costante, ad esempio: CODEX_BIN = "/usr/local/bin/codex".
+# Name of the Codex CLI command.
+# If the command is not called "codex" on your system, edit this line.
 CODEX_BIN = "codex"
 
-# Ogni quanti secondi il worker controlla se ci sono task pronti.
+# How many seconds the worker waits before checking for executable tasks again.
+# 60 means: check once per minute.
 DEFAULT_CHECK_INTERVAL = 60
 
-# Stati logici usati nel database.
-STATUS_PENDING = "PENDING"          # Task pronto ma non ancora eseguito.
-STATUS_RUNNING = "RUNNING"          # Task in esecuzione.
-STATUS_WAITING_LIMIT = "WAITING_LIMIT"  # Task sospeso per limite d'uso.
-STATUS_COMPLETED = "COMPLETED"      # Task completato con successo.
-STATUS_FAILED = "FAILED"            # Task fallito definitivamente.
+
+# Allowed task statuses.
+# Keeping them in a constant makes the code clearer.
+STATUSES = {
+    "PENDING",
+    "RUNNING",
+    "WAITING_LIMIT",
+    "COMPLETED",
+    "FAILED",
+}
 
 
 # ---------------------------------------------------------------------------
-# DATE E ORARI
+# DATE AND TIME HELPERS
 # ---------------------------------------------------------------------------
 
-def utc_now() -> dt.datetime:
-    """Restituisce l'ora attuale in UTC, con timezone esplicita."""
+def utc_now():
+    """
+    Return the current time in UTC.
+
+    Why UTC?
+    --------
+    To avoid issues with time zones, daylight saving time, remote servers, etc.
+    Internally, it is safer to store timestamps in UTC.
+    """
     return dt.datetime.now(dt.timezone.utc)
 
 
-def iso_now() -> str:
-    """Restituisce l'ora attuale in formato ISO, pronta da salvare in SQLite."""
+def iso_now():
+    """
+    Return the current time in ISO format.
+
+    Example:
+    2026-05-29T22:13:00.123456+00:00
+
+    This format is convenient to store in the database and compare.
+    """
     return utc_now().isoformat()
 
 
-def parse_datetime(value: str | None) -> dt.datetime | None:
+def parse_datetime(value):
     """
-    Converte una stringa data/ora in datetime.
+    Convert a datetime string into a datetime object.
 
-    Accetta anche il formato con Z finale, ad esempio:
-        2026-05-30T03:00:00Z
+    It also accepts dates ending with Z, for example:
+    2026-05-30T03:00:00Z
 
-    Se la stringa non è valida, restituisce None.
+    The Z means UTC.
+    Python prefers +00:00, so we replace it before parsing.
     """
     if not value:
         return None
@@ -83,63 +144,118 @@ def parse_datetime(value: str | None) -> dt.datetime | None:
 # DATABASE
 # ---------------------------------------------------------------------------
 
-def connect() -> sqlite3.Connection:
-    """Apre una connessione SQLite al database locale."""
+def connect():
+    """
+    Open a connection to the SQLite database.
+
+    SQLite does not require a server.
+    The database is just a local file.
+    """
     return sqlite3.connect(DB_PATH)
 
 
-def init_db() -> None:
+def init_db():
     """
-    Crea la tabella dei task, se non esiste.
+    Create the tasks table if it does not already exist.
 
-    Da eseguire almeno una volta:
-        python3 codex_queue.py init
+    This function should be called at least once before using the script:
+
+        python codex_queue.py init
+
+    The table stores:
+    - task title;
+    - prompt to send to Codex;
+    - working directory;
+    - priority;
+    - status;
+    - session_id for possible resume;
+    - reset_at to know when to retry;
+    - output;
+    - errors;
+    - creation and update timestamps.
     """
     with connect() as con:
         con.execute(
             """
             CREATE TABLE IF NOT EXISTS tasks (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+                -- Human-readable task name.
                 title TEXT NOT NULL,
+
+                -- Full prompt to send to Codex.
                 prompt TEXT NOT NULL,
+
+                -- Directory where Codex should work.
+                -- Example: /home/antonio/projects/student_A
                 workdir TEXT NOT NULL,
+
+                -- Lower number means earlier execution.
+                -- priority=1 runs before priority=100.
                 priority INTEGER NOT NULL DEFAULT 100,
+
+                -- Task status.
                 status TEXT NOT NULL DEFAULT 'PENDING',
+
+                -- Codex session ID, if available.
+                -- Used to resume an interrupted task.
                 session_id TEXT,
+
+                -- Instruction to give Codex when resuming.
                 next_step TEXT,
+
+                -- Date/time after which the task can run again.
+                -- Used when a usage limit is reached.
                 reset_at TEXT,
+
+                -- Number of attempts already made.
                 attempts INTEGER NOT NULL DEFAULT 0,
+
+                -- Maximum number of attempts before marking the task as FAILED.
                 max_attempts INTEGER NOT NULL DEFAULT 3,
+
+                -- Last short error message.
                 last_error TEXT,
+
+                -- Full output produced by Codex.
                 output TEXT,
+
+                -- Task creation timestamp.
                 created_at TEXT NOT NULL,
+
+                -- Last update timestamp.
                 updated_at TEXT NOT NULL
             )
             """
         )
 
 
-def add_task(
-    title: str,
-    prompt: str,
-    workdir: str = ".",
-    priority: int = 100,
-    max_attempts: int = 3,
-) -> None:
+def add_task(title, prompt, workdir=".", priority=100, max_attempts=3):
     """
-    Aggiunge un task alla coda.
+    Add a new task to the database.
 
+    Parameters:
+    -----------
     title:
-        Nome leggibile del task.
+        Human-readable task title.
+
     prompt:
-        Prompt completo da passare a Codex.
+        Full text to pass to Codex.
+
     workdir:
-        Cartella in cui Codex deve lavorare.
+        Directory where Codex should perform the work.
+
     priority:
-        Numero più basso = task più importante.
+        Task priority.
+        Lower number = higher priority.
+
     max_attempts:
-        Tentativi massimi in caso di errore generico.
+        Maximum number of attempts for generic errors.
+        Usage limits are not treated as permanent failures:
+        the task moves to WAITING_LIMIT instead.
     """
+    # Convert the path to an absolute path.
+    # This avoids ambiguity if the script is started from another directory.
     workdir = str(Path(workdir).resolve())
 
     with connect() as con:
@@ -149,14 +265,13 @@ def add_task(
                 title, prompt, workdir, priority, status,
                 attempts, max_attempts, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?)
+            VALUES (?, ?, ?, ?, 'PENDING', 0, ?, ?, ?)
             """,
             (
                 title,
                 prompt,
                 workdir,
                 priority,
-                STATUS_PENDING,
                 max_attempts,
                 iso_now(),
                 iso_now(),
@@ -164,8 +279,12 @@ def add_task(
         )
 
 
-def list_tasks() -> None:
-    """Stampa una lista sintetica dei task presenti nel database."""
+def list_tasks():
+    """
+    Print the task list to the terminal.
+
+    Tasks are ordered so active or important tasks appear first.
+    """
     with connect() as con:
         rows = con.execute(
             """
@@ -186,7 +305,7 @@ def list_tasks() -> None:
         ).fetchall()
 
     if not rows:
-        print("Nessun task presente.")
+        print("No tasks found.")
         return
 
     for row in rows:
@@ -196,19 +315,32 @@ def list_tasks() -> None:
         )
 
 
-def get_next_task() -> sqlite3.Row | None:
+def get_next_task():
     """
-    Restituisce il prossimo task eseguibile.
+    Find the next executable task.
 
-    Un task è eseguibile quando:
-    - è PENDING;
-    - oppure è WAITING_LIMIT e reset_at è passato.
+    A task is executable if:
+
+    1. it is PENDING;
+
+    or
+
+    2. it is WAITING_LIMIT but the reset_at time has already passed.
+
+    Example:
+    - Codex reached the limit at 23:00;
+    - reset_at is 04:00;
+    - until 03:59, the task will not run;
+    - from 04:00 onward, the task becomes executable again.
     """
     now = iso_now()
 
     with connect() as con:
+        # row_factory lets us access fields with task["id"],
+        # task["title"], etc., instead of numeric indexes.
         con.row_factory = sqlite3.Row
-        return con.execute(
+
+        row = con.execute(
             """
             SELECT *
             FROM tasks
@@ -224,39 +356,68 @@ def get_next_task() -> sqlite3.Row | None:
             (now,),
         ).fetchone()
 
+    return row
 
-def update_task(task_id: int, **fields) -> None:
+
+def update_task(task_id, **fields):
     """
-    Aggiorna uno o più campi di un task.
+    Update one or more fields of a task.
 
-    Esempio:
-        update_task(1, status="COMPLETED", output="...")
+    Example:
+        update_task(3, status="COMPLETED", output="...")
+
+    This helper avoids writing different SQL queries every time.
     """
     if not fields:
         return
 
+    # Every update also updates updated_at automatically.
     fields["updated_at"] = iso_now()
-    columns = ", ".join(f"{key} = ?" for key in fields)
-    values = list(fields.values()) + [task_id]
+
+    # Dynamically build SQL such as:
+    # status = ?, output = ?, updated_at = ?
+    columns = ", ".join(f"{key} = ?" for key in fields.keys())
+
+    # Values to insert into the placeholders.
+    values = list(fields.values())
+
+    # The task id is needed at the end for the WHERE clause.
+    values.append(task_id)
 
     with connect() as con:
-        con.execute(f"UPDATE tasks SET {columns} WHERE id = ?", values)
+        con.execute(
+            f"UPDATE tasks SET {columns} WHERE id = ?",
+            values,
+        )
 
 
 # ---------------------------------------------------------------------------
-# LETTURA OUTPUT CODEX
+# CODEX OUTPUT ANALYSIS
 # ---------------------------------------------------------------------------
 
-def extract_session_id(text: str) -> str | None:
+def extract_session_id(text):
     """
-    Prova a estrarre un session_id dall'output di Codex.
+    Try to extract a session_id from Codex output.
 
-    Se la tua versione di Codex stampa la sessione in un modo diverso,
-    aggiungi qui un nuovo pattern regex.
+    Important note:
+    ---------------
+    The exact output format may change.
+    This function uses several regular expressions to search for common patterns.
+
+    If Codex prints the session ID in a different format on your system,
+    update or add a pattern here.
     """
     patterns = [
+        # Example:
+        # session_id: abcdef...
         r"session[_ -]?id[:=]\s*([0-9a-fA-F-]{20,})",
+
+        # Example:
+        # Session: abcdef...
         r"Session[: ]+([0-9a-fA-F-]{20,})",
+
+        # UUID example:
+        # resume ... 123e4567-e89b-12d3-a456-426614174000
         r"resum(?:e|ing).*?([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})",
     ]
 
@@ -268,14 +429,17 @@ def extract_session_id(text: str) -> str | None:
     return None
 
 
-def extract_reset_at(text: str) -> str | None:
+def extract_reset_at(text):
     """
-    Prova a estrarre l'orario di reset del limite dall'output di Codex.
+    Try to extract the usage limit reset time from Codex output.
 
-    Cerca forme come:
+    It searches for strings such as:
     - resets_at: "2026-05-30T03:00:00Z"
     - reset_at: "2026-05-30T03:00:00Z"
     - try again after 2026-05-30T03:00:00Z
+
+    If nothing is found, it returns None.
+    In that case, the script will use a fallback such as +5 hours.
     """
     patterns = [
         r"resets_at[\"']?\s*[:=]\s*[\"']([^\"']+)[\"']",
@@ -287,15 +451,28 @@ def extract_reset_at(text: str) -> str | None:
     for pattern in patterns:
         match = re.search(pattern, text, re.IGNORECASE)
         if match:
-            parsed = parse_datetime(match.group(1))
+            value = match.group(1)
+            parsed = parse_datetime(value)
+
             if parsed:
                 return parsed.isoformat()
 
     return None
 
 
-def looks_like_usage_limit(text: str) -> bool:
-    """Riconosce in modo euristico un errore di limite d'uso/rate limit."""
+def looks_like_usage_limit(text):
+    """
+    Detect whether an error looks like a usage limit issue.
+
+    It is not perfect, because it depends on the message returned by Codex.
+    However, it catches common cases:
+    - usage limit;
+    - rate limit;
+    - quota;
+    - too many requests;
+    - 429 error;
+    - limit reached.
+    """
     markers = [
         "usage limit",
         "rate limit",
@@ -304,53 +481,96 @@ def looks_like_usage_limit(text: str) -> bool:
         "429",
         "limit reached",
     ]
+
     lower = text.lower()
     return any(marker in lower for marker in markers)
 
 
 # ---------------------------------------------------------------------------
-# ESECUZIONE CODEX
+# CODEX EXECUTION
 # ---------------------------------------------------------------------------
 
-def build_codex_command(task: sqlite3.Row) -> list[str]:
+def build_codex_command(task):
     """
-    Costruisce il comando Codex.
+    Build the Codex command to execute.
 
-    Task nuovo:
-        codex exec PROMPT
+    Case 1: new task, no session_id
+    --------------------------------
+    Use:
 
-    Task con session_id:
-        codex exec resume SESSION_ID FOLLOWUP
+        codex exec "prompt"
+
+    Case 2: task already started, with session_id
+    ---------------------------------------------
+    Use:
+
+        codex exec resume SESSION_ID "continue..."
+
+    This makes it possible to try resuming from the previous state.
     """
-    if task["session_id"]:
-        followup = task["next_step"] or (
-            "Continua dal punto in cui ti eri interrotto. "
-            "Mantieni il piano e completa il task."
+    prompt = task["prompt"]
+    session_id = task["session_id"]
+    next_step = task["next_step"]
+
+    if session_id:
+        followup = (
+            next_step
+            or "Continue from where you stopped. Keep the plan and complete the task."
         )
-        return [CODEX_BIN, "exec", "resume", task["session_id"], followup]
 
-    return [CODEX_BIN, "exec", task["prompt"]]
+        return [CODEX_BIN, "exec", "resume", session_id, followup]
+
+    return [CODEX_BIN, "exec", prompt]
 
 
-def run_codex(task: sqlite3.Row) -> None:
+def run_codex(task):
     """
-    Esegue un singolo task con Codex e aggiorna lo stato nel database.
+    Execute a task with Codex.
+
+    Flow:
+    -----
+    1. Load the task from the database.
+    2. Build the Codex command.
+    3. Mark the task as RUNNING.
+    4. Launch Codex.
+    5. Read stdout and stderr.
+    6. If Codex exits successfully -> COMPLETED.
+    7. If Codex reaches a usage limit -> WAITING_LIMIT.
+    8. If it fails for another reason -> retry or FAILED.
     """
     task_id = task["id"]
+
+    # Build the command to launch.
     cmd = build_codex_command(task)
 
+    # Before starting Codex, mark the task as RUNNING.
+    # Also increment the attempts counter.
     update_task(
         task_id,
-        status=STATUS_RUNNING,
+        status="RUNNING",
         attempts=task["attempts"] + 1,
         last_error=None,
     )
 
-    print(f"\nAvvio task #{task_id}: {task['title']}")
-    print("Cartella di lavoro:", task["workdir"])
-    print("Comando:", " ".join(cmd))
+    print(f"\nStarting task #{task_id}: {task['title']}")
+    print("Working directory:", task["workdir"])
+    print("Command:", " ".join(cmd))
 
     try:
+        # subprocess.run launches the command.
+        #
+        # cwd=task["workdir"]:
+        #     Codex works inside the project directory.
+        #
+        # text=True:
+        #     stdout/stderr are returned as strings.
+        #
+        # capture_output=True:
+        #     We capture output and errors instead of only printing them.
+        #
+        # timeout=None:
+        #     No time limit is set.
+        #     If you want to avoid endless tasks, set something like timeout=3600.
         result = subprocess.run(
             cmd,
             cwd=task["workdir"],
@@ -359,75 +579,118 @@ def run_codex(task: sqlite3.Row) -> None:
             timeout=None,
         )
 
+        # Merge stdout and stderr into a single text.
+        # This lets us search for usage limit and reset_at in both.
         combined_output = (result.stdout or "") + "\n" + (result.stderr or "")
+
+        # Try to recover a session_id from the output.
         found_session_id = extract_session_id(combined_output) or task["session_id"]
+
+        # Try to recover the reset time.
         reset_at = extract_reset_at(combined_output)
 
+        # CASE A: Codex completed successfully.
         if result.returncode == 0:
             update_task(
                 task_id,
-                status=STATUS_COMPLETED,
+                status="COMPLETED",
                 output=combined_output,
                 session_id=found_session_id,
                 reset_at=None,
             )
-            print(f"Task #{task_id} completato.")
+            print(f"Task #{task_id} completed.")
             return
 
+        # CASE B: Codex appears to have reached a usage limit.
         if looks_like_usage_limit(combined_output):
-            # Fallback: se Codex non comunica un reset leggibile, riprova tra 5 ore.
+            # If Codex does not provide a readable reset_at,
+            # use an estimate: retry in 5 hours.
+            #
+            # You can change this value depending on your actual plan/limit.
             if not reset_at:
                 reset_at = (utc_now() + dt.timedelta(hours=5)).isoformat()
 
             update_task(
                 task_id,
-                status=STATUS_WAITING_LIMIT,
+                status="WAITING_LIMIT",
                 output=combined_output,
                 session_id=found_session_id,
                 reset_at=reset_at,
                 next_step=(
-                    "Riprendi il lavoro dal punto esatto in cui eri arrivato "
-                    "e completa il task."
+                    "Resume the work from the exact point where you stopped "
+                    "and complete the task."
                 ),
                 last_error="Usage limit reached",
             )
-            print(f"Task #{task_id} sospeso per limite. Riprenderà dopo: {reset_at}")
+
+            print(f"Task #{task_id} suspended because a usage limit was reached.")
+            print(f"It will resume after: {reset_at}")
             return
 
+        # CASE C: generic error.
+        # If attempts are still available, put the task back into PENDING.
         if task["attempts"] + 1 < task["max_attempts"]:
             update_task(
                 task_id,
-                status=STATUS_PENDING,
+                status="PENDING",
                 output=combined_output,
                 session_id=found_session_id,
                 last_error=combined_output[-3000:],
             )
-            print(f"Task #{task_id} fallito, ma verrà ritentato.")
+
+            print(f"Task #{task_id} failed, but it will be retried.")
             return
 
+        # CASE D: generic error and no attempts left.
         update_task(
             task_id,
-            status=STATUS_FAILED,
+            status="FAILED",
             output=combined_output,
             session_id=found_session_id,
             last_error=combined_output[-3000:],
         )
-        print(f"Task #{task_id} fallito definitivamente.")
+
+        print(f"Task #{task_id} failed permanently.")
 
     except Exception as exc:
-        update_task(task_id, status=STATUS_FAILED, last_error=str(exc))
-        print(f"Errore task #{task_id}: {exc}")
+        # This catches Python-level errors, not Codex-level errors.
+        # Examples:
+        # - codex is not installed;
+        # - workdir does not exist;
+        # - insufficient permissions.
+        update_task(
+            task_id,
+            status="FAILED",
+            last_error=str(exc),
+        )
+        print(f"Task #{task_id} error: {exc}")
 
 
 # ---------------------------------------------------------------------------
 # WORKER
 # ---------------------------------------------------------------------------
 
-def worker_loop(check_interval: int = DEFAULT_CHECK_INTERVAL, stop_when_empty: bool = False) -> None:
+def worker_loop(check_interval=DEFAULT_CHECK_INTERVAL, stop_when_empty=False):
     """
-    Ciclo principale.
+    Main worker loop.
 
-    Cerca task pronti, li esegue e resta in ascolto.
+    This is the core of the script.
+
+    It works like this:
+    -------------------
+    - find the next executable task;
+    - if found, execute it;
+    - if not found, wait check_interval seconds;
+    - repeat.
+
+    If stop_when_empty=True:
+    ------------------------
+    the worker stops when no executable task is found.
+
+    If stop_when_empty=False:
+    -------------------------
+    the worker stays active forever.
+    This mode is useful overnight or on a server.
     """
     init_db()
 
@@ -436,10 +699,10 @@ def worker_loop(check_interval: int = DEFAULT_CHECK_INTERVAL, stop_when_empty: b
 
         if not task:
             if stop_when_empty:
-                print("Nessun task eseguibile. Uscita.")
+                print("No executable tasks found. Exiting.")
                 return
 
-            print(f"Nessun task pronto. Ricontrollo tra {check_interval} secondi.")
+            print(f"No task ready. Checking again in {check_interval} seconds.")
             time.sleep(check_interval)
             continue
 
@@ -447,60 +710,71 @@ def worker_loop(check_interval: int = DEFAULT_CHECK_INTERVAL, stop_when_empty: b
 
 
 # ---------------------------------------------------------------------------
-# TASK DI ESEMPIO
+# EXAMPLE TASKS
 # ---------------------------------------------------------------------------
 
-def seed_example_tasks(workdir: str = ".") -> None:
-    """Aggiunge task di esempio per provare subito il sistema."""
+def seed_example_tasks(workdir="."):
+    """
+    Insert a few example tasks.
+
+    They are useful for understanding how the system works.
+
+    You can modify them for your real project:
+    - student grading;
+    - test generation;
+    - final report;
+    - pull request creation;
+    - code refactoring.
+    """
     add_task(
-        title="Correggi esercizio studente A",
+        title="Grade student A assignment",
         prompt="""
-Sei un correttore imparziale.
+You are an impartial grader.
 
-Leggi il progetto nella cartella corrente.
-Esegui i test disponibili.
-Valuta l'esercizio secondo questa griglia:
+Read the project in the current directory.
+Run the available tests.
+Evaluate the assignment using this rubric:
 
-- correttezza funzionale: 0-4
-- qualità codice: 0-2
-- gestione errori: 0-2
-- chiarezza e stile: 0-2
+- functional correctness: 0-4
+- code quality: 0-2
+- error handling: 0-2
+- clarity and style: 0-2
 
-Produci:
-1. voto su 10;
-2. motivazione per ogni indicatore;
-3. giudizio finale sintetico;
-4. eventuali suggerimenti di miglioramento.
+Produce:
+1. grade out of 10;
+2. reasoning for each criterion;
+3. short final evaluation;
+4. possible improvement suggestions.
 
-Salva il risultato in report_studente_A.md.
+Save the result in report_student_A.md.
 """,
         workdir=workdir,
         priority=1,
     )
 
     add_task(
-        title="Genera test automatici mancanti",
+        title="Generate missing automated tests",
         prompt="""
-Analizza il progetto nella cartella corrente.
-Individua i casi non coperti dai test.
-Aggiungi test automatici chiari e ripetibili.
-Non cambiare la logica dell'applicazione.
-Alla fine esegui i test e scrivi un riepilogo in test_report.md.
+Analyze the project in the current directory.
+Identify cases not covered by tests.
+Add clear and repeatable automated tests.
+Do not change the application logic.
+At the end, run the tests and write a summary in test_report.md.
 """,
         workdir=workdir,
         priority=2,
     )
 
     add_task(
-        title="Crea report finale",
+        title="Create final report",
         prompt="""
-Leggi tutti i report markdown presenti nella cartella corrente.
-Crea un report_finale.md con:
-- elenco studenti;
-- voto;
-- punti di forza;
-- criticità;
-- suggerimenti didattici.
+Read all markdown reports in the current directory.
+Create a report_final.md file with:
+- student list;
+- grade;
+- strengths;
+- issues;
+- teaching suggestions.
 """,
         workdir=workdir,
         priority=3,
@@ -508,39 +782,79 @@ Crea un report_finale.md con:
 
 
 # ---------------------------------------------------------------------------
-# CLI
+# COMMAND-LINE INTERFACE
 # ---------------------------------------------------------------------------
 
-def main() -> None:
-    """Definisce i comandi utilizzabili da terminale."""
+def main():
+    """
+    Define the commands available from the terminal.
+
+    Available commands:
+    -------------------
+
+    1. init
+       Create the database.
+
+    2. add
+       Add a task manually.
+
+    3. seed
+       Add example tasks.
+
+    4. list
+       Show tasks.
+
+    5. run
+       Start the worker.
+    """
     parser = argparse.ArgumentParser(
-        description="Orchestratore semplice per task Codex CLI con coda SQLite."
+        description="Simple Codex CLI task orchestrator with a SQLite queue."
     )
+
     sub = parser.add_subparsers(dest="command", required=True)
 
-    sub.add_parser("init", help="Inizializza il database SQLite.")
+    # Command:
+    # python codex_queue.py init
+    sub.add_parser("init", help="Initialize the SQLite database.")
 
-    add = sub.add_parser("add", help="Aggiunge un task alla coda.")
-    add.add_argument("--title", required=True, help="Titolo del task.")
-    add.add_argument("--prompt", required=True, help="Prompt da passare a Codex.")
-    add.add_argument("--workdir", default=".", help="Cartella di lavoro.")
-    add.add_argument("--priority", type=int, default=100, help="Numero più basso = prima.")
-    add.add_argument("--max-attempts", type=int, default=3, help="Tentativi massimi.")
+    # Command:
+    # python codex_queue.py add --title ... --prompt ... --workdir ... --priority ...
+    add = sub.add_parser("add", help="Add a task to the queue.")
+    add.add_argument("--title", required=True, help="Task title.")
+    add.add_argument("--prompt", required=True, help="Prompt to pass to Codex.")
+    add.add_argument("--workdir", default=".", help="Working directory.")
+    add.add_argument("--priority", type=int, default=100, help="Priority: lower number = earlier.")
+    add.add_argument("--max-attempts", type=int, default=3, help="Maximum attempts.")
 
-    seed = sub.add_parser("seed", help="Aggiunge task di esempio.")
-    seed.add_argument("--workdir", default=".", help="Cartella di lavoro dei task di esempio.")
+    # Command:
+    # python codex_queue.py seed --workdir /path/to/project
+    seed = sub.add_parser("seed", help="Add example tasks.")
+    seed.add_argument("--workdir", default=".", help="Working directory for example tasks.")
 
-    sub.add_parser("list", help="Mostra i task presenti nel database.")
+    # Command:
+    # python codex_queue.py list
+    sub.add_parser("list", help="Show tasks stored in the database.")
 
-    run = sub.add_parser("run", help="Avvia il worker.")
-    run.add_argument("--interval", type=int, default=DEFAULT_CHECK_INTERVAL)
-    run.add_argument("--stop-when-empty", action="store_true")
+    # Command:
+    # python codex_queue.py run
+    run = sub.add_parser("run", help="Start the worker.")
+    run.add_argument(
+        "--interval",
+        type=int,
+        default=DEFAULT_CHECK_INTERVAL,
+        help="Seconds between checks.",
+    )
+    run.add_argument(
+        "--stop-when-empty",
+        action="store_true",
+        help="Stop the worker if no task is ready.",
+    )
 
     args = parser.parse_args()
 
     if args.command == "init":
         init_db()
-        print("Database inizializzato.")
+        print("Database initialized.")
 
     elif args.command == "add":
         init_db()
@@ -551,20 +865,29 @@ def main() -> None:
             priority=args.priority,
             max_attempts=args.max_attempts,
         )
-        print("Task aggiunto.")
+        print("Task added.")
 
     elif args.command == "seed":
         init_db()
         seed_example_tasks(args.workdir)
-        print("Task di esempio aggiunti.")
+        print("Example tasks added.")
 
     elif args.command == "list":
         init_db()
         list_tasks()
 
     elif args.command == "run":
-        worker_loop(check_interval=args.interval, stop_when_empty=args.stop_when_empty)
+        worker_loop(
+            check_interval=args.interval,
+            stop_when_empty=args.stop_when_empty,
+        )
 
 
+# Script entry point.
+# When you run:
+#
+#     python codex_queue.py init
+#
+# Python enters here and calls main().
 if __name__ == "__main__":
     main()
