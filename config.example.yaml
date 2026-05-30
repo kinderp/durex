@@ -1,0 +1,88 @@
+# Durex v0.2 example configuration
+#
+# This file documents the planned configuration shape.
+# The current CLI already supports most runtime options directly through flags.
+# A future config loader can read this file and build the same effective config.
+#
+# Do not store real Telegram bot tokens in this file.
+# Use environment variables instead.
+
+runner:
+  # Supported values:
+  # - subprocess: classic non-interactive runner
+  # - pty: pseudo-terminal runner with approval handling
+  mode: pty
+
+  # How often the worker checks for runnable tasks when the queue is empty.
+  check_interval_seconds: 60
+
+  # Fallback retry delay when Codex returns a usage-limit error but no reset
+  # timestamp can be parsed from the output.
+  default_retry_hours: 5
+
+  # Mirror PTY output to the local terminal while also capturing it.
+  echo_output: true
+
+telegram:
+  # Enable Telegram approvals when using runner.mode = pty.
+  enabled: true
+
+  # Environment variable containing the Telegram bot token.
+  bot_token_env: DUREX_TELEGRAM_BOT_TOKEN
+
+  # Environment variable containing the only chat id allowed to approve tasks.
+  allowed_chat_id_env: DUREX_TELEGRAM_CHAT_ID
+
+  # Supported values:
+  # - compact: task and command only
+  # - normal: task, directory, command and reason
+  # - verbose: normal plus recent terminal context
+  verbosity: normal
+
+  # Maximum time to wait for a Telegram approval callback.
+  approval_timeout_seconds: 900
+
+  # Recommended safe default when the user does not answer in time.
+  # Supported future values: approve, deny, stop
+  timeout_default_decision: deny
+
+policy:
+  # Conservative default: ask the user when no rule matches.
+  # Supported values: ask, approve, deny
+  default_decision: ask
+
+  # Commands commonly used for local validation or read-only inspection.
+  auto_allow:
+    - "pytest*"
+    - "python -m pytest*"
+    - "python3 -m pytest*"
+    - "ruff check*"
+    - "mypy*"
+    - "git status*"
+    - "git diff*"
+    - "git log*"
+
+  # Commands that may modify local state, external state or dependencies.
+  ask_telegram:
+    - "git add*"
+    - "git commit*"
+    - "git push*"
+    - "pip install*"
+    - "pip3 install*"
+    - "npm install*"
+    - "pnpm install*"
+    - "yarn install*"
+    - "docker*"
+    - "curl*"
+    - "wget*"
+
+  # Commands denied by default.
+  auto_deny:
+    - "sudo*"
+
+logging:
+  # Future location for per-task logs and audit logs.
+  directory: logs
+
+  # Future switch for writing approval decisions to an audit log.
+  approval_audit_enabled: true
