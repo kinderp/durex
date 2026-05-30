@@ -6,8 +6,6 @@ It lets you prepare a persistent queue of Codex jobs, run them unattended, resum
 
 > Durex is currently an experimental local tool. Review commands carefully before approving them remotely.
 
----
-
 ## Why Durex exists
 
 Codex is useful for long-running engineering tasks, but local workflows can still be interrupted by practical issues:
@@ -27,8 +25,6 @@ Durex solves these problems with:
 - Telegram approval buttons;
 - documentation and diagrams for future structured-event support.
 
----
-
 ## Current feature set
 
 | Feature | Status |
@@ -46,8 +42,6 @@ Durex solves these problems with:
 | Unit tests for detector and policy | Available |
 | Structured event runner | Planned |
 | Web dashboard | Planned |
-
----
 
 ## Architecture overview
 
@@ -82,8 +76,6 @@ More diagrams are available in:
 - [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md)
 - [`docs/ROADMAP.md`](docs/ROADMAP.md)
 
----
-
 ## Requirements
 
 You need:
@@ -104,8 +96,6 @@ Check Codex:
 ```bash
 codex --help
 ```
-
----
 
 ## Repository layout
 
@@ -128,8 +118,6 @@ codex --help
     ├── SEQUENCE_DIAGRAMS.md
     └── TELEGRAM_APPROVALS.md
 ```
-
----
 
 ## Quick start
 
@@ -169,8 +157,6 @@ Run with PTY and Telegram approvals:
 python3 codex_queue.py run --runner-mode pty --telegram
 ```
 
----
-
 ## Adding tasks
 
 Simple task:
@@ -201,8 +187,6 @@ priority=10   important
 priority=100  normal
 priority=999  low priority
 ```
-
----
 
 ## Runner modes
 
@@ -237,8 +221,6 @@ Then it can:
 - auto-approve according to policy;
 - auto-deny according to policy;
 - ask Telegram when configured.
-
----
 
 ## Telegram approvals
 
@@ -298,8 +280,6 @@ Buttons:
 
 More details: [`docs/TELEGRAM_APPROVALS.md`](docs/TELEGRAM_APPROVALS.md)
 
----
-
 ## Approval policy
 
 The policy engine classifies detected commands into:
@@ -327,8 +307,6 @@ The planned configuration shape is documented in:
 - [`config.example.yaml`](config.example.yaml)
 - [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md)
 
----
-
 ## Usage-limit handling
 
 When Codex returns output that looks like a usage or rate limit, Durex moves the task to:
@@ -344,8 +322,6 @@ current UTC time + 5 hours
 ```
 
 When the reset time has passed, the worker picks the task again and resumes it when a session id is available.
-
----
 
 ## Overnight workflow example
 
@@ -372,8 +348,6 @@ Watch logs:
 ```bash
 tail -f durex.log
 ```
-
----
 
 ## Testing
 
@@ -405,8 +379,6 @@ export DUREX_TELEGRAM_CHAT_ID="your-chat-id"
 python3 telegram_bridge.py
 ```
 
----
-
 ## Inspecting the database
 
 Open SQLite:
@@ -427,8 +399,6 @@ Exit:
 .quit
 ```
 
----
-
 ## Recommended grading structure
 
 For assignment grading, keep one folder per student:
@@ -448,8 +418,6 @@ grading/
 
 Then add one task per folder. This keeps Codex isolated and avoids mixing files between students.
 
----
-
 ## Documentation
 
 | Document | Purpose |
@@ -460,8 +428,6 @@ Then add one task per folder. This keeps Codex isolated and avoids mixing files 
 | [`docs/TELEGRAM_APPROVALS.md`](docs/TELEGRAM_APPROVALS.md) | Telegram approval protocol |
 | [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) | Planned configuration model |
 | [`docs/ROADMAP.md`](docs/ROADMAP.md) | Version roadmap |
-
----
 
 ## Roadmap
 
@@ -476,8 +442,6 @@ flowchart LR
 ```
 
 See [`docs/ROADMAP.md`](docs/ROADMAP.md).
-
----
 
 ## Common issues
 
@@ -524,8 +488,6 @@ The PTY detector is text-based. If Codex changes prompt wording, update patterns
 approval_detector.py
 ```
 
----
-
 ## Security notes
 
 - Telegram is an approval channel, not a shell.
@@ -533,8 +495,6 @@ approval_detector.py
 - The PTY runner writes only normalized decisions back to Codex.
 - Unknown commands should be reviewed by a human.
 - The detector redacts obvious token-like values before forwarding text to Telegram, but it is not a complete data-loss-prevention system.
-
----
 
 ## License
 
