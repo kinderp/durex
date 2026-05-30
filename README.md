@@ -1,58 +1,97 @@
-# Codex Queue
+# Durex
 
-`codex_queue.py` is a small Python orchestrator for running a list of tasks with **Codex CLI**, storing their state, and automatically resuming them after a usage limit resets.
+Durex is a local task orchestrator for Codex CLI.
 
-The idea is simple: instead of launching Codex manually every time, you prepare a queue of jobs and leave the program running, even overnight.
+It lets you prepare a persistent queue of Codex jobs, run them unattended, resume work after usage-limit interruptions and, in v0.2, approve interactive terminal prompts from Telegram.
 
-## What it is for
+> Durex is currently an experimental local tool. Review commands carefully before approving them remotely.
 
-It can be used to:
+---
 
-- grade student assignments;
-- run automated tests;
-- generate reports;
-- create feedback;
-- resume interrupted work;
-- make use of overnight usage windows;
-- suspend a task when Codex reaches a usage limit;
-- automatically retry after the reset.
+## Why Durex exists
 
-## General structure
+Codex is useful for long-running engineering tasks, but local workflows can still be interrupted by practical issues:
 
-The program uses a local SQLite database:
+- usage limits can stop work before a task is finished;
+- interactive approvals require the user to be near the computer;
+- overnight execution windows are often wasted;
+- multiple tasks need ordering, retry logic and persistence.
 
-```text
-codex_tasks.db
-```
+Durex solves these problems with:
 
-The database stores tasks with these statuses:
+- a persistent SQLite task queue;
+- automatic retry and resume support;
+- usage-limit detection;
+- PTY-based interactive execution;
+- approval policies;
+- Telegram approval buttons;
+- documentation and diagrams for future structured-event support.
 
-```text
-PENDING
-RUNNING
-WAITING_LIMIT
-COMPLETED
-FAILED
-```
+---
 
-Meaning:
+## Current feature set
 
-| Status | Meaning |
+| Feature | Status |
 |---|---|
-| `PENDING` | The task is waiting |
-| `RUNNING` | The task is running |
-| `WAITING_LIMIT` | Codex reached a usage limit and the task is waiting for reset |
-| `COMPLETED` | The task completed successfully |
-| `FAILED` | The task failed permanently |
+| SQLite task queue | Available |
+| Priority-based execution | Available |
+| Usage-limit waiting | Available |
+| Resume command support | Available |
+| Classic subprocess runner | Available |
+| PTY runner | Available |
+| Approval detector | Available |
+| Approval policy engine | Available |
+| Telegram approval bridge | Available |
+| Example configuration | Available |
+| Unit tests for detector and policy | Available |
+| Structured event runner | Planned |
+| Web dashboard | Planned |
+
+---
+
+## Architecture overview
+
+```mermaid
+flowchart TD
+    User[User] --> CLI[codex_queue.py]
+    CLI --> DB[(SQLite task database)]
+    Worker[Worker loop] --> DB
+    Worker --> Runner{Runner mode}
+    Runner --> Subprocess[subprocess runner]
+    Runner --> PTY[PTY runner]
+    Subprocess --> CodexA[Codex CLI]
+    PTY --> CodexB[Codex CLI in pseudo-terminal]
+    PTY --> Detector[approval_detector.py]
+    Detector --> Policy[approval_policy.py]
+    Policy -->|auto allow| PTY
+    Policy -->|auto deny| PTY
+    Policy -->|ask user| Telegram[telegram_bridge.py]
+    Telegram --> Phone[User phone]
+    Phone --> Telegram
+    Telegram --> PTY
+    PTY --> DB
+    Subprocess --> DB
+```
+
+More diagrams are available in:
+
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
+- [`docs/SEQUENCE_DIAGRAMS.md`](docs/SEQUENCE_DIAGRAMS.md)
+- [`docs/PTY_VS_EVENTS.md`](docs/PTY_VS_EVENTS.md)
+- [`docs/TELEGRAM_APPROVALS.md`](docs/TELEGRAM_APPROVALS.md)
+- [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md)
+- [`docs/ROADMAP.md`](docs/ROADMAP.md)
+
+---
 
 ## Requirements
 
 You need:
 
 - Python 3.10 or newer;
-- Codex CLI installed;
-- Codex access already configured;
-- a project directory where Codex can work.
+- Codex CLI installed and configured;
+- optional: `pytest` for running the test suite;
+- optional: a Telegram bot token and chat id for remote approvals.
 
 Check Python:
 
@@ -66,33 +105,33 @@ Check Codex:
 codex --help
 ```
 
-If the command is not called `codex`, open `codex_queue.py` and edit this line:
+---
 
-```python
-CODEX_BIN = "codex"
-```
-
-## Installation
-
-Download or copy the file:
+## Repository layout
 
 ```text
-codex_queue.py
+.
+├── codex_queue.py              # Main CLI and task queue
+├── approval_detector.py        # Terminal prompt detector
+├── approval_policy.py          # Approval policy engine
+├── telegram_bridge.py          # Telegram Bot API bridge
+├── pty_runner.py               # PTY runner and approval pipeline
+├── config.example.yaml         # Planned v0.2 configuration shape
+├── tests/
+│   ├── test_approval_detector.py
+│   └── test_approval_policy.py
+└── docs/
+    ├── ARCHITECTURE.md
+    ├── CONFIGURATION.md
+    ├── PTY_VS_EVENTS.md
+    ├── ROADMAP.md
+    ├── SEQUENCE_DIAGRAMS.md
+    └── TELEGRAM_APPROVALS.md
 ```
 
-Optionally make it executable:
+---
 
-```bash
-chmod +x codex_queue.py
-```
-
-You can still use it like this:
-
-```bash
-python3 codex_queue.py
-```
-
-## First run
+## Quick start
 
 Initialize the database:
 
@@ -100,93 +139,41 @@ Initialize the database:
 python3 codex_queue.py init
 ```
 
-Expected result:
-
-```text
-Database initialized.
-```
-
-This will create the file:
-
-```text
-codex_tasks.db
-```
-
-## Add example tasks
-
-You can load three example tasks:
+Add example tasks:
 
 ```bash
 python3 codex_queue.py seed --workdir /path/to/project
 ```
 
-Example:
-
-```bash
-python3 codex_queue.py seed --workdir /Users/antonio/projects/student_A
-```
-
-This adds tasks such as:
-
-1. grade a student assignment;
-2. generate tests;
-3. create a final report.
-
-## Show the task list
+Show the queue:
 
 ```bash
 python3 codex_queue.py list
 ```
 
-Example output:
-
-```text
-[1] Grade student A assignment | status=PENDING | priority=1 | attempts=0 | reset_at=None | workdir=/Users/antonio/projects/student_A
-[2] Generate missing automated tests | status=PENDING | priority=2 | attempts=0 | reset_at=None | workdir=/Users/antonio/projects/student_A
-[3] Create final report | status=PENDING | priority=3 | attempts=0 | reset_at=None | workdir=/Users/antonio/projects/student_A
-```
-
-## Start the worker
-
-To start executing tasks:
+Run with the classic non-interactive runner:
 
 ```bash
 python3 codex_queue.py run
 ```
 
-The program:
-
-1. takes the first available task;
-2. runs it with Codex;
-3. stores the output;
-4. moves to the next task;
-5. if it detects a usage limit, it pauses the task;
-6. retries after `reset_at`.
-
-## Overnight run
-
-To let it work overnight:
+Run with the PTY runner:
 
 ```bash
-nohup python3 codex_queue.py run > codex_queue.log 2>&1 &
+python3 codex_queue.py run --runner-mode pty
 ```
 
-Meaning:
-
-- `nohup` keeps the process alive even if you close the terminal;
-- `>` saves the output to a file;
-- `2>&1` saves errors to the same file;
-- `&` runs the process in the background.
-
-To watch the log:
+Run with PTY and Telegram approvals:
 
 ```bash
-tail -f codex_queue.log
+python3 codex_queue.py run --runner-mode pty --telegram
 ```
 
-## Add a task manually
+---
 
-Simple example:
+## Adding tasks
+
+Simple task:
 
 ```bash
 python3 codex_queue.py add \
@@ -196,178 +183,171 @@ python3 codex_queue.py add \
   --prompt "Run the tests, grade the assignment, and generate report_student_B.md"
 ```
 
-## More complete grading example
+More complete grading task:
 
 ```bash
 python3 codex_queue.py add \
   --title "Grade Mario Rossi assignment" \
   --workdir /Users/antonio/grading/mario_rossi \
   --priority 1 \
-  --prompt "You are an impartial grader. Read the code in the current directory. Run the tests. Evaluate using this rubric: correctness 0-4, code quality 0-2, error handling 0-2, clarity 0-2. Create a file report_mario_rossi.md with the grade, reasoning for each criterion, and final evaluation."
+  --prompt "You are an impartial grader. Read the code in the current directory. Run the tests. Evaluate using this rubric: correctness 0-4, code quality 0-2, error handling 0-2, clarity 0-2. Create report_mario_rossi.md with the grade, reasoning for each criterion, and final evaluation."
 ```
 
-## Priority
-
-Priority works like this:
+Priority is numeric. Lower values run first:
 
 ```text
-priority=1    very urgent
+priority=1    urgent
 priority=10   important
 priority=100  normal
 priority=999  low priority
 ```
 
-The worker runs lower numerical priority first.
+---
 
-Example:
+## Runner modes
 
-```bash
-python3 codex_queue.py add \
-  --title "Urgent task" \
-  --prompt "Do this before the others" \
-  --priority 1
-```
+Durex currently supports two runner modes.
 
-## Stop when there are no tasks
+### subprocess mode
 
-By default, the worker keeps running forever.
-
-If you want it to stop when no task is ready:
+This is the default mode:
 
 ```bash
-python3 codex_queue.py run --stop-when-empty
+python3 codex_queue.py run --runner-mode subprocess
 ```
 
-Useful for quick tests.
+It uses `subprocess.run()` and is best for non-interactive jobs.
 
-## Change the check interval
+### PTY mode
 
-By default, it checks every 60 seconds.
-
-To check every 5 minutes:
+PTY mode runs Codex inside a pseudo-terminal:
 
 ```bash
-python3 codex_queue.py run --interval 300
+python3 codex_queue.py run --runner-mode pty
 ```
 
-## How it handles usage limits
-
-When Codex fails, the script checks whether the output contains words such as:
+PTY mode can detect prompts such as:
 
 ```text
-usage limit
-rate limit
-quota
-too many requests
-429
-limit reached
+Approve this command? [y/N]
 ```
 
-If it finds them, the task moves to:
+Then it can:
+
+- auto-approve according to policy;
+- auto-deny according to policy;
+- ask Telegram when configured.
+
+---
+
+## Telegram approvals
+
+Telegram approvals allow you to confirm Codex prompts from your phone.
+
+Flow:
+
+```mermaid
+sequenceDiagram
+    participant Codex
+    participant PTY as PTY runner
+    participant Policy
+    participant Telegram
+    participant User
+
+    Codex-->>PTY: approval prompt
+    PTY->>Policy: classify command
+    Policy-->>PTY: ask Telegram
+    PTY->>Telegram: send approval request
+    Telegram->>User: Approve / Deny / Show context / Stop task
+    User-->>Telegram: decision
+    Telegram-->>PTY: decision
+    PTY->>Codex: y or n
+```
+
+### Telegram setup
+
+Create a bot with BotFather, then export:
+
+```bash
+export DUREX_TELEGRAM_BOT_TOKEN="your-bot-token"
+export DUREX_TELEGRAM_CHAT_ID="your-chat-id"
+```
+
+Then run:
+
+```bash
+python3 codex_queue.py run --runner-mode pty --telegram
+```
+
+Verbosity options:
+
+```bash
+python3 codex_queue.py run --runner-mode pty --telegram --telegram-verbosity compact
+python3 codex_queue.py run --runner-mode pty --telegram --telegram-verbosity normal
+python3 codex_queue.py run --runner-mode pty --telegram --telegram-verbosity verbose
+```
+
+Buttons:
+
+| Button | Meaning |
+|---|---|
+| Approve | Send positive confirmation back to Codex |
+| Deny | Send negative confirmation back to Codex |
+| Show context | Send more terminal output to Telegram |
+| Stop task | Stop the current task process |
+
+More details: [`docs/TELEGRAM_APPROVALS.md`](docs/TELEGRAM_APPROVALS.md)
+
+---
+
+## Approval policy
+
+The policy engine classifies detected commands into:
+
+```text
+AUTO_ALLOW
+ASK_TELEGRAM
+AUTO_DENY
+```
+
+Default examples:
+
+| Command type | Decision |
+|---|---|
+| local tests | auto allow |
+| static analysis | auto allow |
+| repository writes | ask Telegram |
+| dependency installation | ask Telegram |
+| elevated-privilege commands | auto deny |
+
+The current CLI uses the built-in `default_policy()` from `approval_policy.py`.
+
+The planned configuration shape is documented in:
+
+- [`config.example.yaml`](config.example.yaml)
+- [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md)
+
+---
+
+## Usage-limit handling
+
+When Codex returns output that looks like a usage or rate limit, Durex moves the task to:
 
 ```text
 WAITING_LIMIT
 ```
 
-Then it tries to read a reset time, for example:
+It then tries to parse a reset timestamp from the output. If no reset timestamp is found, it falls back to:
 
 ```text
-resets_at: "2026-05-30T03:00:00Z"
+current UTC time + 5 hours
 ```
 
-If it cannot read one, it uses an estimate:
+When the reset time has passed, the worker picks the task again and resumes it when a session id is available.
 
-```text
-current time + 5 hours
-```
+---
 
-This part is in the code:
-
-```python
-if not reset_at:
-    reset_at = (utc_now() + dt.timedelta(hours=5)).isoformat()
-```
-
-You can change `5` to another value.
-
-## Task resume
-
-If the script finds a `session_id`, it tries to resume using:
-
-```bash
-codex exec resume SESSION_ID "continue..."
-```
-
-If it does not find a `session_id`, the task can be launched again with the original prompt.
-
-Note: `session_id` detection depends on Codex output format. If Codex prints the session ID differently, edit this function:
-
-```python
-extract_session_id()
-```
-
-## Where the output is stored
-
-Codex output is saved in the database field:
-
-```text
-output
-```
-
-For a more advanced version, you can add a function that exports outputs into `.md` files.
-
-Future example:
-
-```text
-reports/task_1.md
-reports/task_2.md
-reports/task_3.md
-```
-
-## Inspect the database manually
-
-You can open the database with SQLite:
-
-```bash
-sqlite3 codex_tasks.db
-```
-
-Then run:
-
-```sql
-SELECT id, title, status, priority, reset_at FROM tasks;
-```
-
-To exit:
-
-```sql
-.quit
-```
-
-## Recommended structure for assignment grading
-
-A good overnight queue could be:
-
-```text
-1. run tests for student A
-2. grade student A
-3. generate student A report
-4. run tests for student B
-5. grade student B
-6. generate student B report
-7. create general summary
-```
-
-With priorities:
-
-```text
-priority=1   student grading
-priority=2   individual reports
-priority=3   final report
-priority=4   software improvements
-```
-
-## Example workflow
+## Overnight workflow example
 
 ```bash
 python3 codex_queue.py init
@@ -384,107 +364,74 @@ python3 codex_queue.py add \
   --priority 1 \
   --prompt "Run tests, evaluate using the rubric, and create report_B.md"
 
-python3 codex_queue.py add \
-  --title "Final class report" \
-  --workdir /Users/antonio/grading \
-  --priority 3 \
-  --prompt "Read all student reports and create report_final_class.md"
-
-nohup python3 codex_queue.py run > codex_queue.log 2>&1 &
+nohup python3 codex_queue.py run --runner-mode pty --telegram > durex.log 2>&1 &
 ```
 
-## Limits of this version
-
-This is a simple local version.
-
-Limits:
-
-- it uses SQLite, not PostgreSQL;
-- it has no web interface;
-- it does not automatically export outputs to separate files;
-- it does not manage multiple parallel workers;
-- `reset_at` detection depends on the text returned by Codex;
-- resume depends on the availability of a `session_id`.
-
-For a professional version, you could add:
-
-- PostgreSQL;
-- Redis Queue;
-- web dashboard;
-- per-task log files;
-- Telegram/email notifications;
-- GitHub Actions integration;
-- automatic Markdown/PDF reports;
-- management of multiple classes and students;
-- grading rubrics loaded from YAML/JSON files.
-
-
-## Common issues
-
-### 1. `codex: command not found`
-
-Codex CLI is not installed or is not in your PATH.
-
-Check:
+Watch logs:
 
 ```bash
-which codex
+tail -f durex.log
 ```
 
-If the command has a different path, you can edit:
+---
 
-```python
-CODEX_BIN = "codex"
-```
+## Testing
 
-with something like:
-
-```python
-CODEX_BIN = "/usr/local/bin/codex"
-```
-
-### 2. Working directory does not exist
-
-Possible error:
-
-```text
-No such file or directory
-```
-
-Check `--workdir`.
-
-Correct example:
+Install pytest if needed:
 
 ```bash
-python3 codex_queue.py add \
-  --title "Test" \
-  --workdir /Users/antonio/projects/test \
-  --prompt "Analyze the project"
+python3 -m pip install pytest
 ```
 
-### 3. The task stays in WAITING_LIMIT
-
-Check the date:
+Run tests:
 
 ```bash
-python3 codex_queue.py list
+pytest -q
 ```
 
-If `reset_at` is in the future, this is normal.
-
-### 4. The task fails immediately
-
-Check the log:
+Manual demos:
 
 ```bash
-tail -f codex_queue.log
+python3 approval_detector.py
+python3 approval_policy.py
+python3 pty_runner.py
 ```
 
-Or open SQLite and inspect `last_error`.
+Telegram bridge demo requires environment variables:
 
-## Practical advice
+```bash
+export DUREX_TELEGRAM_BOT_TOKEN="your-bot-token"
+export DUREX_TELEGRAM_CHAT_ID="your-chat-id"
+python3 telegram_bridge.py
+```
 
-For assignment grading, the best structure is to create one folder per student:
+---
+
+## Inspecting the database
+
+Open SQLite:
+
+```bash
+sqlite3 codex_tasks.db
+```
+
+Query tasks:
+
+```sql
+SELECT id, title, status, priority, reset_at FROM tasks;
+```
+
+Exit:
+
+```sql
+.quit
+```
+
+---
+
+## Recommended grading structure
+
+For assignment grading, keep one folder per student:
 
 ```text
 grading/
@@ -499,6 +446,96 @@ grading/
     test.py
 ```
 
-Then add one task per folder.
+Then add one task per folder. This keeps Codex isolated and avoids mixing files between students.
 
-This way Codex works in isolation and does not mix files from different students.
+---
+
+## Documentation
+
+| Document | Purpose |
+|---|---|
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | High-level architecture and data model |
+| [`docs/SEQUENCE_DIAGRAMS.md`](docs/SEQUENCE_DIAGRAMS.md) | Function-level runtime flows |
+| [`docs/PTY_VS_EVENTS.md`](docs/PTY_VS_EVENTS.md) | Comparison between PTY and structured events |
+| [`docs/TELEGRAM_APPROVALS.md`](docs/TELEGRAM_APPROVALS.md) | Telegram approval protocol |
+| [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) | Planned configuration model |
+| [`docs/ROADMAP.md`](docs/ROADMAP.md) | Version roadmap |
+
+---
+
+## Roadmap
+
+```mermaid
+flowchart LR
+    V01[v0.1 Queue] --> V02[v0.2 PTY + Telegram]
+    V02 --> V03[v0.3 Structured events]
+    V03 --> V04[v0.4 Workflow engine]
+    V04 --> V05[v0.5 GitHub integration]
+    V05 --> V06[v0.6 Dashboard]
+    V06 --> V10[v1.0 Autonomous overnight engineer]
+```
+
+See [`docs/ROADMAP.md`](docs/ROADMAP.md).
+
+---
+
+## Common issues
+
+### `codex: command not found`
+
+Codex CLI is not installed or is not in your PATH.
+
+Check:
+
+```bash
+which codex
+```
+
+If needed, edit:
+
+```python
+CODEX_BIN = "codex"
+```
+
+### Telegram variables missing
+
+If you run with `--telegram`, these variables must exist:
+
+```bash
+DUREX_TELEGRAM_BOT_TOKEN
+DUREX_TELEGRAM_CHAT_ID
+```
+
+### Task stays in WAITING_LIMIT
+
+Check:
+
+```bash
+python3 codex_queue.py list
+```
+
+If `reset_at` is in the future, this is expected.
+
+### PTY prompt not detected
+
+The PTY detector is text-based. If Codex changes prompt wording, update patterns in:
+
+```text
+approval_detector.py
+```
+
+---
+
+## Security notes
+
+- Telegram is an approval channel, not a shell.
+- The bot accepts decisions only from the configured chat id.
+- The PTY runner writes only normalized decisions back to Codex.
+- Unknown commands should be reviewed by a human.
+- The detector redacts obvious token-like values before forwarding text to Telegram, but it is not a complete data-loss-prevention system.
+
+---
+
+## License
+
+Add a license before publishing this as a public reusable project.
