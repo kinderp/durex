@@ -133,6 +133,45 @@ Add example tasks:
 python3 codex_queue.py seed --workdir /path/to/project
 ```
 
+<details>
+<summary>About <code>seed</code> command</summary>
+    
+The above command automatically creates a small set of example tasks in the SQLite queue. All generated tasks will use the directory specified by --workdir as their working directory.
+
+The example tasks are designed to showcase a typical workflow:
+
+1. Grade a student assignment.
+2. Generate additional automated tests.
+3. Create a final summary report.
+
+When the worker executes these tasks, Codex will operate inside the specified project directory.
+
+For example:
+
+```bash
+python3 codex_queue.py seed --workdir /home/user/my_project
+```
+
+will create example tasks that run against: `/home/user/my_project`
+
+The `seed` command is useful for:
+
+* learning how Durex works;
+* testing the queue system;
+* validating PTY and Telegram integrations;
+* experimenting with task execution.
+
+For real-world usage, it is recommended to create custom tasks with the add command instead:
+
+```bash
+python3 codex_queue.py add \
+  --title "Grade Student A" \
+  --workdir /home/user/student_a \
+  --priority 1 \
+  --prompt "Run tests, evaluate the assignment, and generate a grading report."
+```
+</details>
+  
 Show the queue:
 
 ```bash
