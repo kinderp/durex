@@ -33,6 +33,7 @@ from pathlib import Path
 import re
 import sqlite3
 import subprocess
+import sys
 import time
 from typing import Optional
 
@@ -579,6 +580,34 @@ def main() -> None:
     )
     run.add_argument("--no-echo", action="store_true", help="Do not mirror PTY output to local stdout.")
 
+    control = sub.add_parser("telegram-control", help="Start Telegram remote control for the Durex queue.")
+    control.add_argument(
+        "--allowed-workdir",
+        action="append",
+        help=(
+            "Allowed root for remote /add workdirs. Can be repeated. "
+            "Defaults to DUREX_TELEGRAM_ALLOWED_WORKDIRS or the current directory."
+        ),
+    )
+    control.add_argument(
+        "--runner-mode",
+        choices=["subprocess", "pty"],
+        default="pty",
+        help="Runner used when /run starts the worker.",
+    )
+    control.add_argument(
+        "--worker-telegram-approvals",
+        action="store_true",
+        help="Enable existing Telegram approval prompts inside worker tasks.",
+    )
+    control.add_argument(
+        "--telegram-verbosity",
+        choices=["compact", "normal", "verbose"],
+        default="normal",
+        help="Approval verbosity used when --worker-telegram-approvals is enabled.",
+    )
+    control.add_argument("--echo-output", action="store_true", help="Mirror worker PTY output locally.")
+
     args = parser.parse_args()
 
     if args.command == "init":
@@ -618,6 +647,21 @@ def main() -> None:
             telegram_verbosity=args.telegram_verbosity,
             echo_output=not args.no_echo,
         )
+        return
+
+    if args.command == "telegram-control":
+        sys.modules.setdefault("codex_queue", sys.modules[__name__])
+        from telegram_control import TelegramControlBot
+
+        init_db()
+        bot = TelegramControlBot.from_env(
+            allowed_workdirs=args.allowed_workdir,
+            runner_mode=args.runner_mode,
+            worker_telegram_approvals=args.worker_telegram_approvals,
+            telegram_verbosity=args.telegram_verbosity,
+            echo_output=args.echo_output,
+        )
+        bot.run_forever()
         return
 
 

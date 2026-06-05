@@ -323,18 +323,18 @@ class TelegramApprovalBridge:
             payload["text"] = text
         self.api_call("answerCallbackQuery", payload)
 
-    def poll_updates(self, timeout: int = 20) -> list[dict[str, Any]]:
+    def poll_updates(self, timeout: int = 20, allowed_updates: Optional[list[str]] = None) -> list[dict[str, Any]]:
         """
         Poll Telegram updates.
 
         Long polling keeps the connection open for up to timeout seconds. The
         returned updates may include normal messages, callback queries and other
-        Telegram events. This bridge only uses callback_query.
+        Telegram events.
         """
 
         payload: dict[str, Any] = {
             "timeout": timeout,
-            "allowed_updates": ["callback_query"],
+            "allowed_updates": allowed_updates or ["callback_query"],
         }
 
         if self._last_update_id is not None:
