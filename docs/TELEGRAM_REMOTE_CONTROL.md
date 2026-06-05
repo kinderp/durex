@@ -23,12 +23,45 @@ Alfred.
 
 ## Starting Remote Control
 
-Set the bot credentials:
+Create a Telegram bot and set the credentials:
+
+1. Open `@BotFather` in Telegram.
+2. Send `/newbot`.
+3. Choose a display name.
+4. Choose a username ending in `bot`, for example `my_durex_bot`.
+5. Copy the token returned by BotFather.
 
 ```bash
 export DUREX_TELEGRAM_BOT_TOKEN="your-bot-token"
-export DUREX_TELEGRAM_CHAT_ID="your-chat-id"
 ```
+
+Validate the token:
+
+```bash
+python3 codex_queue.py telegram-check
+```
+
+Send any message to the bot from the Telegram chat that should control Durex,
+then discover and validate the chat id:
+
+```bash
+python3 codex_queue.py telegram-check --discover-chat-id
+export DUREX_TELEGRAM_CHAT_ID="the-chat-id-from-the-check"
+python3 codex_queue.py telegram-check --send-test
+```
+
+Private chat ids are usually positive integers. Group and supergroup ids are
+often negative. Use exactly the value printed by `telegram-check`.
+
+Official Telegram references:
+
+- Bot overview: https://core.telegram.org/bots
+- BotFather guide: https://core.telegram.org/bots/features#botfather
+- Bot API reference: https://core.telegram.org/bots/api
+- Bot API tutorial: https://core.telegram.org/bots/tutorial
+- `getMe`: https://core.telegram.org/bots/api#getme
+- `getUpdates`: https://core.telegram.org/bots/api#getupdates
+- `sendMessage`: https://core.telegram.org/bots/api#sendmessage
 
 Start the remote-control daemon:
 

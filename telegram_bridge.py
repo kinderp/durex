@@ -129,6 +129,37 @@ class TelegramBridgeError(RuntimeError):
     """
 
 
+def extract_chat_ids_from_updates(updates: list[dict[str, Any]]) -> list[int]:
+    """
+    Return unique Telegram chat ids found in getUpdates payloads.
+
+    Telegram returns different update shapes for normal messages and inline
+    callbacks. Durex accepts both depending on the feature being used.
+    """
+
+    chat_ids: list[int] = []
+    seen: set[int] = set()
+
+    for update in updates:
+        candidates = [
+            update.get("message", {}),
+            update.get("edited_message", {}),
+            update.get("callback_query", {}).get("message", {}),
+        ]
+        for message in candidates:
+            chat = message.get("chat", {}) if isinstance(message, dict) else {}
+            raw_chat_id = chat.get("id")
+            try:
+                chat_id = int(raw_chat_id)
+            except (TypeError, ValueError):
+                continue
+            if chat_id not in seen:
+                seen.add(chat_id)
+                chat_ids.append(chat_id)
+
+    return chat_ids
+
+
 class TelegramApprovalBridge:
     """
     Small Telegram Bot API client for approval requests.
@@ -214,6 +245,17 @@ class TelegramApprovalBridge:
             raise TelegramBridgeError(f"Telegram API returned an error: {data}")
 
         return data
+
+    def get_me(self) -> dict[str, Any]:
+        """
+        Return Telegram bot metadata.
+        """
+
+        data = self.api_call("getMe", {})
+        result = data.get("result")
+        if not isinstance(result, dict):
+            raise TelegramBridgeError(f"Telegram getMe returned an invalid response: {data}")
+        return result
 
     def build_message_text(self, approval: TelegramApprovalRequest) -> str:
         """
@@ -349,6 +391,15 @@ class TelegramApprovalBridge:
                 self._last_update_id = update_id
 
         return updates
+
+    def discover_chat_ids(self, timeout: int = 0) -> list[int]:
+        """
+        Poll recent updates and return chat ids that can be used for config.
+        """
+
+        return extract_chat_ids_from_updates(
+            self.poll_updates(timeout=timeout, allowed_updates=["message", "callback_query"])
+        )
 
     def parse_callback(self, update: dict[str, Any], expected_request_id: str) -> Optional[TelegramApprovalDecision]:
         """

@@ -296,14 +296,44 @@ sequenceDiagram
 
 ### Telegram setup
 
-Create a bot with BotFather, then export:
+Create a bot with Telegram's official `@BotFather`:
+
+1. Open `@BotFather` in Telegram.
+2. Send `/newbot`.
+3. Choose a display name.
+4. Choose a username ending in `bot`, for example `my_durex_bot`.
+5. Copy the token returned by BotFather.
+
+Store the token in the environment:
 
 ```bash
 export DUREX_TELEGRAM_BOT_TOKEN="your-bot-token"
-export DUREX_TELEGRAM_CHAT_ID="your-chat-id"
 ```
 
-Then run:
+Validate the token, then send any message to the bot from the Telegram chat you
+want to authorize and discover the chat id:
+
+```bash
+python3 codex_queue.py telegram-check
+python3 codex_queue.py telegram-check --discover-chat-id
+export DUREX_TELEGRAM_CHAT_ID="the-chat-id-from-the-check"
+python3 codex_queue.py telegram-check --send-test
+```
+
+For a private chat, `DUREX_TELEGRAM_CHAT_ID` is usually a positive integer. For
+groups and supergroups, it is often negative. Use exactly the value printed by
+`telegram-check`.
+
+Official Telegram references:
+
+- Bot overview: https://core.telegram.org/bots
+- BotFather guide: https://core.telegram.org/bots/features#botfather
+- Bot API reference: https://core.telegram.org/bots/api
+- `getMe`: https://core.telegram.org/bots/api#getme
+- `getUpdates`: https://core.telegram.org/bots/api#getupdates
+- `sendMessage`: https://core.telegram.org/bots/api#sendmessage
+
+Then run approvals:
 
 ```bash
 python3 codex_queue.py run --runner-mode pty --telegram
@@ -339,7 +369,10 @@ Start the remote-control daemon:
 
 ```bash
 export DUREX_TELEGRAM_BOT_TOKEN="your-bot-token"
-export DUREX_TELEGRAM_CHAT_ID="your-chat-id"
+python3 codex_queue.py telegram-check
+python3 codex_queue.py telegram-check --discover-chat-id
+export DUREX_TELEGRAM_CHAT_ID="the-chat-id-from-the-check"
+python3 codex_queue.py telegram-check --send-test
 
 python3 codex_queue.py telegram-control --allowed-workdir /path/to/projects
 ```

@@ -39,7 +39,7 @@ from typing import Optional
 
 from approval_policy import default_policy
 from pty_runner import PtyRunnerConfig, run_pty_command
-from telegram_bridge import TelegramApprovalBridge, TelegramBridgeError
+from telegram_bridge import TelegramApprovalBridge, TelegramBridgeConfig, TelegramBridgeError
 
 
 DB_PATH = "codex_tasks.db"
@@ -400,6 +400,48 @@ def build_telegram_bridge(enabled: bool, verbosity: str) -> Optional[TelegramApp
     return TelegramApprovalBridge.from_env(verbosity=verbosity)
 
 
+def telegram_check(discover_chat_id: bool, send_test: bool, message: str, poll_timeout: int) -> None:
+    """Validate Telegram Bot API connectivity and optional chat routing."""
+
+    token = os.environ.get("DUREX_TELEGRAM_BOT_TOKEN")
+    chat_id = os.environ.get("DUREX_TELEGRAM_CHAT_ID")
+    if not token:
+        raise TelegramBridgeError("Missing DUREX_TELEGRAM_BOT_TOKEN.")
+
+    allowed_chat_id = 0
+    if chat_id:
+        try:
+            allowed_chat_id = int(chat_id)
+        except ValueError as exc:
+            raise TelegramBridgeError("DUREX_TELEGRAM_CHAT_ID must be an integer.") from exc
+
+    bridge = TelegramApprovalBridge(
+        TelegramBridgeConfig(bot_token=token, allowed_chat_id=allowed_chat_id)
+    )
+
+    bot = bridge.get_me()
+    username = bot.get("username", "<unknown>")
+    bot_id = bot.get("id", "<unknown>")
+    print(f"Telegram token OK: @{username} ({bot_id})")
+
+    if discover_chat_id:
+        print("Polling Telegram updates for chat ids...")
+        chat_ids = bridge.discover_chat_ids(timeout=poll_timeout)
+        if chat_ids:
+            for discovered in chat_ids:
+                print(f"Found chat id: {discovered}")
+            if not chat_id:
+                print(f"Set DUREX_TELEGRAM_CHAT_ID={chat_ids[-1]}")
+        else:
+            print("No chat ids found. Send any message to the bot, then run this command again.")
+
+    if send_test:
+        if not chat_id:
+            raise TelegramBridgeError("Cannot send test message without DUREX_TELEGRAM_CHAT_ID.")
+        message_id = bridge.send_message(message)
+        print(f"Telegram test message sent: message_id={message_id}")
+
+
 def run_codex_pty(task: sqlite3.Row, telegram_enabled: bool, telegram_verbosity: str, echo_output: bool) -> None:
     """Run one task using the PTY approval bridge."""
 
@@ -580,6 +622,32 @@ def main() -> None:
     )
     run.add_argument("--no-echo", action="store_true", help="Do not mirror PTY output to local stdout.")
 
+    telegram_check_parser = sub.add_parser(
+        "telegram-check",
+        help="Validate Telegram Bot API credentials and optional chat routing.",
+    )
+    telegram_check_parser.add_argument(
+        "--discover-chat-id",
+        action="store_true",
+        help="Poll recent updates and print chat ids that messaged the bot.",
+    )
+    telegram_check_parser.add_argument(
+        "--send-test",
+        action="store_true",
+        help="Send a test message to DUREX_TELEGRAM_CHAT_ID.",
+    )
+    telegram_check_parser.add_argument(
+        "--message",
+        default="Durex Telegram check OK.",
+        help="Message used with --send-test.",
+    )
+    telegram_check_parser.add_argument(
+        "--poll-timeout",
+        type=int,
+        default=0,
+        help="Seconds to wait for updates when --discover-chat-id is used.",
+    )
+
     control = sub.add_parser("telegram-control", help="Start Telegram remote control for the Durex queue.")
     control.add_argument(
         "--allowed-workdir",
@@ -646,6 +714,15 @@ def main() -> None:
             telegram_enabled=args.telegram,
             telegram_verbosity=args.telegram_verbosity,
             echo_output=not args.no_echo,
+        )
+        return
+
+    if args.command == "telegram-check":
+        telegram_check(
+            discover_chat_id=args.discover_chat_id,
+            send_test=args.send_test,
+            message=args.message,
+            poll_timeout=args.poll_timeout,
         )
         return
 
