@@ -84,6 +84,7 @@ input back to Codex.
 
 More diagrams are available in:
 
+- [`docs/SYSTEM_OVERVIEW.md`](docs/SYSTEM_OVERVIEW.md)
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
 - [`docs/SEQUENCE_DIAGRAMS.md`](docs/SEQUENCE_DIAGRAMS.md)
 - [`docs/PTY_VS_EVENTS.md`](docs/PTY_VS_EVENTS.md)
@@ -559,6 +560,7 @@ Then add one task per folder. This keeps Codex isolated and avoids mixing files 
 
 | Document | Purpose |
 |---|---|
+| [`docs/SYSTEM_OVERVIEW.md`](docs/SYSTEM_OVERVIEW.md) | Whole-system map and Python file responsibilities |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | High-level architecture and data model |
 | [`docs/SEQUENCE_DIAGRAMS.md`](docs/SEQUENCE_DIAGRAMS.md) | Function-level runtime flows |
 | [`docs/PTY_VS_EVENTS.md`](docs/PTY_VS_EVENTS.md) | Comparison between PTY and structured events |
