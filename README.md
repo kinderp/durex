@@ -73,6 +73,7 @@ More diagrams are available in:
 - [`docs/SEQUENCE_DIAGRAMS.md`](docs/SEQUENCE_DIAGRAMS.md)
 - [`docs/PTY_VS_EVENTS.md`](docs/PTY_VS_EVENTS.md)
 - [`docs/TELEGRAM_APPROVALS.md`](docs/TELEGRAM_APPROVALS.md)
+- [`docs/SESSION_APPROVAL_DEDUP.md`](docs/SESSION_APPROVAL_DEDUP.md)
 - [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md)
 - [`docs/ROADMAP.md`](docs/ROADMAP.md)
 
@@ -109,12 +110,15 @@ codex --help
 ├── config.example.yaml         # Planned v0.2 configuration shape
 ├── tests/
 │   ├── test_approval_detector.py
-│   └── test_approval_policy.py
+│   ├── test_codex_queue.py
+│   ├── test_approval_policy.py
+│   └── test_pty_runner.py
 └── docs/
     ├── ARCHITECTURE.md
     ├── CONFIGURATION.md
     ├── PTY_VS_EVENTS.md
     ├── ROADMAP.md
+    ├── SESSION_APPROVAL_DEDUP.md
     ├── SEQUENCE_DIAGRAMS.md
     └── TELEGRAM_APPROVALS.md
 ```
