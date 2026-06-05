@@ -749,3 +749,4 @@ Recommended practices:
 - Telegram approvals: [TELEGRAM_APPROVALS.md](TELEGRAM_APPROVALS.md)
 - Telegram remote control: [TELEGRAM_REMOTE_CONTROL.md](TELEGRAM_REMOTE_CONTROL.md)
 - CLI documentation automation: [CLI_DOC_AUTOMATION.md](CLI_DOC_AUTOMATION.md)
+- Operating rules: [OPERATING_RULES.md](OPERATING_RULES.md)

@@ -556,15 +556,16 @@ Details:
 For a first full understanding:
 
 1. read this document end to end;
-2. read [USER_GUIDE.md](USER_GUIDE.md) for commands and workflows;
-3. read [README.md](../README.md) for the project summary;
-4. read [ARCHITECTURE.md](ARCHITECTURE.md) for component and data-model detail;
-5. read [SEQUENCE_DIAGRAMS.md](SEQUENCE_DIAGRAMS.md) for runtime behavior;
-6. read [TELEGRAM_APPROVALS.md](TELEGRAM_APPROVALS.md) and
+2. read [OPERATING_RULES.md](OPERATING_RULES.md) before starting a new change;
+3. read [USER_GUIDE.md](USER_GUIDE.md) for commands and workflows;
+4. read [README.md](../README.md) for the project summary;
+5. read [ARCHITECTURE.md](ARCHITECTURE.md) for component and data-model detail;
+6. read [SEQUENCE_DIAGRAMS.md](SEQUENCE_DIAGRAMS.md) for runtime behavior;
+7. read [TELEGRAM_APPROVALS.md](TELEGRAM_APPROVALS.md) and
    [TELEGRAM_REMOTE_CONTROL.md](TELEGRAM_REMOTE_CONTROL.md) for Telegram;
-7. read [PTY_VS_EVENTS.md](PTY_VS_EVENTS.md) to understand current PTY choices
+8. read [PTY_VS_EVENTS.md](PTY_VS_EVENTS.md) to understand current PTY choices
    and future structured-event direction;
-8. read [CONFIGURATION.md](CONFIGURATION.md) and [ROADMAP.md](ROADMAP.md) for
+9. read [CONFIGURATION.md](CONFIGURATION.md) and [ROADMAP.md](ROADMAP.md) for
    planned evolution.
 
 For code reading:
