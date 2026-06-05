@@ -38,6 +38,7 @@ Durex solves these problems with:
 | Approval detector | Available |
 | Approval policy engine | Available |
 | Telegram approval bridge | Available |
+| Telegram remote queue control | Available |
 | Example configuration | Available |
 | Unit tests for detector and policy | Available |
 | Structured event runner | Planned |
@@ -73,6 +74,8 @@ More diagrams are available in:
 - [`docs/SEQUENCE_DIAGRAMS.md`](docs/SEQUENCE_DIAGRAMS.md)
 - [`docs/PTY_VS_EVENTS.md`](docs/PTY_VS_EVENTS.md)
 - [`docs/TELEGRAM_APPROVALS.md`](docs/TELEGRAM_APPROVALS.md)
+- [`docs/TELEGRAM_REMOTE_CONTROL.md`](docs/TELEGRAM_REMOTE_CONTROL.md)
+- [`docs/SESSION_APPROVAL_DEDUP.md`](docs/SESSION_APPROVAL_DEDUP.md)
 - [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md)
 - [`docs/ROADMAP.md`](docs/ROADMAP.md)
 
@@ -105,17 +108,23 @@ codex --help
 ├── approval_detector.py        # Terminal prompt detector
 ├── approval_policy.py          # Approval policy engine
 ├── telegram_bridge.py          # Telegram Bot API bridge
+├── telegram_control.py         # Telegram remote-control command router
 ├── pty_runner.py               # PTY runner and approval pipeline
 ├── config.example.yaml         # Planned v0.2 configuration shape
 ├── tests/
 │   ├── test_approval_detector.py
-│   └── test_approval_policy.py
+│   ├── test_codex_queue.py
+│   ├── test_approval_policy.py
+│   ├── test_pty_runner.py
+│   └── test_telegram_control.py
 └── docs/
     ├── ARCHITECTURE.md
     ├── CONFIGURATION.md
     ├── PTY_VS_EVENTS.md
     ├── ROADMAP.md
+    ├── SESSION_APPROVAL_DEDUP.md
     ├── SEQUENCE_DIAGRAMS.md
+    ├── TELEGRAM_REMOTE_CONTROL.md
     └── TELEGRAM_APPROVALS.md
 ```
 
@@ -287,14 +296,44 @@ sequenceDiagram
 
 ### Telegram setup
 
-Create a bot with BotFather, then export:
+Create a bot with Telegram's official `@BotFather`:
+
+1. Open `@BotFather` in Telegram.
+2. Send `/newbot`.
+3. Choose a display name.
+4. Choose a username ending in `bot`, for example `my_durex_bot`.
+5. Copy the token returned by BotFather.
+
+Store the token in the environment:
 
 ```bash
 export DUREX_TELEGRAM_BOT_TOKEN="your-bot-token"
-export DUREX_TELEGRAM_CHAT_ID="your-chat-id"
 ```
 
-Then run:
+Validate the token, then send any message to the bot from the Telegram chat you
+want to authorize and discover the chat id:
+
+```bash
+python3 codex_queue.py telegram-check
+python3 codex_queue.py telegram-check --discover-chat-id
+export DUREX_TELEGRAM_CHAT_ID="the-chat-id-from-the-check"
+python3 codex_queue.py telegram-check --send-test
+```
+
+For a private chat, `DUREX_TELEGRAM_CHAT_ID` is usually a positive integer. For
+groups and supergroups, it is often negative. Use exactly the value printed by
+`telegram-check`.
+
+Official Telegram references:
+
+- Bot overview: https://core.telegram.org/bots
+- BotFather guide: https://core.telegram.org/bots/features#botfather
+- Bot API reference: https://core.telegram.org/bots/api
+- `getMe`: https://core.telegram.org/bots/api#getme
+- `getUpdates`: https://core.telegram.org/bots/api#getupdates
+- `sendMessage`: https://core.telegram.org/bots/api#sendmessage
+
+Then run approvals:
 
 ```bash
 python3 codex_queue.py run --runner-mode pty --telegram
@@ -318,6 +357,44 @@ Buttons:
 | Stop task | Stop the current task process |
 
 More details: [`docs/TELEGRAM_APPROVALS.md`](docs/TELEGRAM_APPROVALS.md)
+
+## Telegram remote control
+
+Telegram remote control lets you operate the Durex queue from your phone. It is
+separate from approval mode: approval mode answers Codex prompts, while remote
+control accepts Durex commands such as `/status`, `/tasks`, `/add`, `/run`,
+`/tail` and `/stop`.
+
+Start the remote-control daemon:
+
+```bash
+export DUREX_TELEGRAM_BOT_TOKEN="your-bot-token"
+python3 codex_queue.py telegram-check
+python3 codex_queue.py telegram-check --discover-chat-id
+export DUREX_TELEGRAM_CHAT_ID="the-chat-id-from-the-check"
+python3 codex_queue.py telegram-check --send-test
+
+python3 codex_queue.py telegram-control --allowed-workdir /path/to/projects
+```
+
+Example Telegram command:
+
+```text
+/add --title "Fix tests" --workdir /path/to/projects/my-repo --priority 10
+Run the tests, fix the failures, and summarize the changes.
+```
+
+Then start the worker from Telegram:
+
+```text
+/run
+```
+
+Remote control does not execute arbitrary shell input from Telegram. Direct live
+Codex terminal control is intentionally left for a future policy layer such as
+Alfred.
+
+More details: [`docs/TELEGRAM_REMOTE_CONTROL.md`](docs/TELEGRAM_REMOTE_CONTROL.md)
 
 ## Approval policy
 
@@ -465,6 +542,7 @@ Then add one task per folder. This keeps Codex isolated and avoids mixing files 
 | [`docs/SEQUENCE_DIAGRAMS.md`](docs/SEQUENCE_DIAGRAMS.md) | Function-level runtime flows |
 | [`docs/PTY_VS_EVENTS.md`](docs/PTY_VS_EVENTS.md) | Comparison between PTY and structured events |
 | [`docs/TELEGRAM_APPROVALS.md`](docs/TELEGRAM_APPROVALS.md) | Telegram approval protocol |
+| [`docs/TELEGRAM_REMOTE_CONTROL.md`](docs/TELEGRAM_REMOTE_CONTROL.md) | Telegram queue remote-control mode |
 | [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) | Planned configuration model |
 | [`docs/ROADMAP.md`](docs/ROADMAP.md) | Version roadmap |
 

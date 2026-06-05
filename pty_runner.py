@@ -440,6 +440,7 @@ def run_pty_command(
                             output="".join(output_parts),
                             approval_events=audit_events,
                         )
+                    rolling_buffer = ""
 
             if process.poll() is not None:
                 break
