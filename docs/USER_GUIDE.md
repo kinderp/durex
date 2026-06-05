@@ -748,3 +748,4 @@ Recommended practices:
 - Runner design: [PTY_VS_EVENTS.md](PTY_VS_EVENTS.md)
 - Telegram approvals: [TELEGRAM_APPROVALS.md](TELEGRAM_APPROVALS.md)
 - Telegram remote control: [TELEGRAM_REMOTE_CONTROL.md](TELEGRAM_REMOTE_CONTROL.md)
+- CLI documentation automation: [CLI_DOC_AUTOMATION.md](CLI_DOC_AUTOMATION.md)

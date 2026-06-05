@@ -502,6 +502,12 @@ Run tests:
 pytest -q
 ```
 
+Check that the user guide mentions every current CLI command and long option:
+
+```bash
+python3 scripts/check_cli_docs.py
+```
+
 Manual demos:
 
 ```bash
@@ -562,6 +568,7 @@ Then add one task per folder. This keeps Codex isolated and avoids mixing files 
 | Document | Purpose |
 |---|---|
 | [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md) | Step-by-step usage guide and CLI workflows |
+| [`docs/CLI_DOC_AUTOMATION.md`](docs/CLI_DOC_AUTOMATION.md) | CLI documentation drift check and generator roadmap |
 | [`docs/SYSTEM_OVERVIEW.md`](docs/SYSTEM_OVERVIEW.md) | Whole-system map and Python file responsibilities |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | High-level architecture and data model |
 | [`docs/SEQUENCE_DIAGRAMS.md`](docs/SEQUENCE_DIAGRAMS.md) | Function-level runtime flows |
