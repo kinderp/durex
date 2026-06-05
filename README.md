@@ -69,6 +69,19 @@ flowchart TD
     Subprocess --> DB
 ```
 
+In this diagram, edges represent runtime triggers. `User -> codex_queue.py`
+starts a CLI command such as `add`, `run`, `telegram-check`, or
+`telegram-control`. `Worker loop -> Runner mode` is triggered when the worker
+claims a ready task. The subprocess runner captures normal command output, while
+the PTY runner keeps Codex attached to a pseudo-terminal so interactive prompts
+can be detected.
+
+The approval path is only active in PTY mode. Terminal output triggers
+`approval_detector.py`; detected prompts trigger `approval_policy.py`; policy can
+auto-allow, auto-deny, or ask `telegram_bridge.py` to send the decision to the
+user phone. The PTY runner remains the only component that writes the resulting
+input back to Codex.
+
 More diagrams are available in:
 
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
@@ -295,6 +308,12 @@ sequenceDiagram
     Telegram-->>PTY: decision
     PTY->>Codex: y or n
 ```
+
+The sequence starts only after Codex prints an approval prompt in the PTY. The
+policy decides whether Telegram is required. If Telegram is used, the bridge
+sends buttons to the configured chat and waits for an approved callback. The
+callback is converted into a local decision; the PTY runner then writes `y` or
+`n`, or stops the task for a stop decision.
 
 ### Telegram setup
 
@@ -545,6 +564,7 @@ Then add one task per folder. This keeps Codex isolated and avoids mixing files 
 | [`docs/PTY_VS_EVENTS.md`](docs/PTY_VS_EVENTS.md) | Comparison between PTY and structured events |
 | [`docs/TELEGRAM_APPROVALS.md`](docs/TELEGRAM_APPROVALS.md) | Telegram approval protocol |
 | [`docs/TELEGRAM_REMOTE_CONTROL.md`](docs/TELEGRAM_REMOTE_CONTROL.md) | Telegram queue remote-control mode |
+| [`docs/SESSION_APPROVAL_DEDUP.md`](docs/SESSION_APPROVAL_DEDUP.md) | Session id and approval deduplication fix |
 | [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) | Planned configuration model |
 | [`docs/ROADMAP.md`](docs/ROADMAP.md) | Version roadmap |
 
@@ -560,6 +580,11 @@ flowchart LR
     V05 --> V06[v0.6 Dashboard]
     V06 --> V10[v1.0 Autonomous overnight engineer]
 ```
+
+Each roadmap edge represents the next major capability layer. The project first
+stabilizes local queue execution, then adds PTY approvals, then moves toward
+structured events, workflow orchestration, repository integrations, monitoring,
+and finally broader autonomous overnight execution.
 
 See [`docs/ROADMAP.md`](docs/ROADMAP.md).
 

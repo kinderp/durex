@@ -6,6 +6,22 @@ The roadmap is intentionally incremental. Each version should remain usable on i
 
 ---
 
+## How to read this roadmap
+
+Each version adds one major capability layer. The diagrams show the new shape of
+the system at that stage, not a complete implementation blueprint.
+
+Read each edge as the new dependency or trigger introduced by that release. For
+example, `Queue -> Worker` means queued tasks can trigger worker execution, while
+`Policy -> Telegram` means a policy decision can trigger a remote approval
+request.
+
+The roadmap is ordered by risk. Early versions focus on local persistence,
+runner control, approval handling, and observability. Later versions add
+workflow graphs, external integrations, web UI, and multiple agents.
+
+---
+
 ## Vision
 
 Durex exists to solve three practical problems:
@@ -25,6 +41,23 @@ flowchart LR
     Agents --> GitHub[Repositories]
     Agents --> Reports[Reports]
 ```
+
+### Vision nodes and triggers
+
+`Persistent queue` is the durable backlog of work. It triggers agent execution
+when tasks are ready.
+
+`LLM agents` are the execution units that perform repository work, produce
+reports, and encounter decisions.
+
+`Decision policy` evaluates whether an agent action is safe, should be blocked,
+or requires the user.
+
+`Human approvals` are triggered only when policy cannot safely decide
+automatically.
+
+`Repositories` and `Reports` are the long-term outputs: code changes,
+reviewable artifacts, status summaries, and audit trails.
 
 ---
 
@@ -49,6 +82,15 @@ flowchart LR
     Queue[SQLite queue] --> Worker[Worker loop]
     Worker --> Codex[Codex CLI]
 ```
+
+### Architecture meaning
+
+`SQLite queue` stores tasks and lets the process survive restarts.
+
+`Worker loop` is triggered by the operator running the worker command. It claims
+ready tasks and updates their status.
+
+`Codex CLI` is triggered once the worker starts a task.
 
 ### Goal
 
@@ -84,6 +126,23 @@ flowchart LR
     Telegram --> User[User]
 ```
 
+### Architecture meaning
+
+`Queue -> Worker` is the same task-claim trigger from v0.1.
+
+`Worker -> PTY runner` means tasks can run in a pseudo-terminal instead of only
+through subprocess capture.
+
+`PTY runner -> Approval detector` is triggered by terminal output.
+
+`Approval detector -> Approval policy` is triggered when an interactive prompt is
+recognized.
+
+`Approval policy -> Telegram bridge` is triggered when local policy returns an
+ask-user decision.
+
+`Telegram bridge -> User` is triggered by the approval request sent to the phone.
+
 ### Goal
 
 Allow unattended execution while still enabling human approval from a phone.
@@ -111,6 +170,18 @@ flowchart LR
     Runner --> EventRunner[Event runner]
     EventRunner --> EventStream[Structured events]
 ```
+
+### Architecture meaning
+
+`Worker -> Runner interface` introduces an abstraction so the worker does not
+depend on one execution backend.
+
+`Runner interface -> PTY runner` keeps the current terminal-based path.
+
+`Runner interface -> Event runner` adds the future structured-event path.
+
+`Event runner -> Structured events` is triggered when Codex exposes machine
+readable events for output, tool calls, approvals, usage limits, and completion.
 
 ### Goal
 
@@ -150,6 +221,16 @@ flowchart TD
     TaskB --> TaskC
 ```
 
+### Architecture meaning
+
+`Run tests -> Generate report` is triggered only after the upstream task reaches
+a successful terminal state or satisfies a configured condition.
+
+`Generate report -> Create summary` is triggered after report output exists.
+
+The workflow engine therefore changes the queue from a flat list into a graph of
+ready, blocked, completed, and failed nodes.
+
 ### Goal
 
 Move from independent tasks to orchestrated workflows.
@@ -178,6 +259,19 @@ flowchart LR
     Codex --> PullRequest[Pull request]
     PullRequest --> Telegram[Approval]
 ```
+
+### Architecture meaning
+
+`GitHub repository -> Durex queue` is triggered by repository events or explicit
+operator requests.
+
+`Durex queue -> Codex` is the normal task execution trigger.
+
+`Codex -> Pull request` is triggered when an agent produces reviewable code
+changes.
+
+`Pull request -> Approval` is triggered when merge, push, review response, or
+other repository-facing actions need human authorization.
 
 ### Goal
 
@@ -208,6 +302,15 @@ flowchart LR
     API --> Audit[Audit log]
 ```
 
+### Architecture meaning
+
+`Web UI -> Durex API` is triggered by user actions in the browser.
+
+`Durex API -> Queue` is triggered by task inspection, enqueue, retry, pause, and
+cancel operations.
+
+`Durex API -> Audit log` is triggered by approval-history and task-history views.
+
 ### Goal
 
 Make monitoring and control easier.
@@ -235,6 +338,15 @@ flowchart LR
     Queue --> AgentB[Agent B]
     Queue --> AgentC[Agent C]
 ```
+
+### Architecture meaning
+
+`Queue -> Agent A/B/C` is triggered when independent workers claim runnable
+tasks. Each agent can specialize by repository, task type, risk level, or
+available execution backend.
+
+This version requires stronger locking, leases, ownership, and audit metadata so
+multiple agents do not duplicate work or overwrite each other.
 
 ### Goal
 
@@ -271,6 +383,25 @@ flowchart TD
     Reports --> Dashboard[Dashboard]
 ```
 
+### Architecture meaning
+
+`Task queue -> Worker pool` is triggered when queued work is ready and capacity
+is available.
+
+`Worker pool -> Codex sessions` starts multiple local or distributed execution
+sessions.
+
+`Codex sessions -> Decision policy` is triggered by actions that require safety
+classification.
+
+`Decision policy -> Telegram approvals` is triggered by human-required actions.
+
+`Codex sessions -> Repositories` is triggered by code, review, or repository
+automation tasks.
+
+`Codex sessions -> Reports -> Dashboard` is triggered as completed work produces
+summaries that need to be inspected later.
+
 ### Example overnight flow
 
 ```mermaid
@@ -293,6 +424,26 @@ sequenceDiagram
     Durex->>Codex: continue execution
     Codex-->>Durex: completed work
 ```
+
+### Overnight trigger details
+
+`User -> Durex: add overnight tasks` creates queued work before the user leaves.
+
+`User -> Durex: start worker` begins unattended processing.
+
+`Durex -> Codex: execute tasks` is triggered for each ready task.
+
+`Codex -> Durex: approval needed` is triggered by an interactive approval prompt
+or future structured approval event.
+
+`Durex -> Telegram -> User` is triggered when policy requires human input.
+
+`User -> Telegram -> Durex` returns the approval decision.
+
+`Durex -> Codex: continue execution` writes the resulting local action or sends
+the equivalent structured response.
+
+`Codex -> Durex: completed work` updates task status and output for later review.
 
 ### Goal
 
