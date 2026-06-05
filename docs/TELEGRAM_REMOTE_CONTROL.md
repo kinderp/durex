@@ -167,7 +167,8 @@ python3 codex_queue.py telegram-control --runner-mode subprocess
 python3 codex_queue.py telegram-control --runner-mode pty
 ```
 
-Existing Telegram approval prompts can be enabled for worker tasks:
+Telegram approval prompts inside remotely started worker tasks are not supported
+yet:
 
 ```bash
 python3 codex_queue.py telegram-control \
@@ -175,8 +176,11 @@ python3 codex_queue.py telegram-control \
   --worker-telegram-approvals
 ```
 
-This uses the existing approval bridge. It is still an approval channel, not a
-free-form command channel.
+The command rejects this combination because remote control and approval prompts
+would otherwise create competing Telegram `getUpdates` consumers for the same
+bot token. A future implementation should use one shared Telegram update
+dispatcher that routes message commands and callback-query approvals from a
+single polling loop.
 
 ## Security Boundaries
 

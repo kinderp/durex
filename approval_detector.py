@@ -222,6 +222,10 @@ def prompt_signature(command: Optional[str], context: str) -> str:
     if not prompt_line:
         prompt_line = "\n".join(lines[-3:])
 
+    if not command:
+        stable_context = "\n".join(lines[-5:])
+        return f"{normalize_text(stable_context)}\n{normalize_text(prompt_line)}"
+
     return f"{normalize_text(command or '')}\n{normalize_text(prompt_line)}"
 
 

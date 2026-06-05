@@ -16,6 +16,7 @@ from pathlib import Path
 import shlex
 import sqlite3
 import threading
+import time
 from typing import Callable, Optional
 
 import codex_queue
@@ -47,6 +48,8 @@ class TelegramControlConfig:
     telegram_verbosity: str = "normal"
     echo_output: bool = False
     poll_timeout_seconds: int = 20
+    retry_base_seconds: float = 1.0
+    retry_max_seconds: float = 30.0
 
 
 @dataclass
@@ -267,6 +270,8 @@ class TelegramControlBot:
             telegram_verbosity=config.telegram_verbosity,
             echo_output=config.echo_output,
             poll_timeout_seconds=config.poll_timeout_seconds,
+            retry_base_seconds=config.retry_base_seconds,
+            retry_max_seconds=config.retry_max_seconds,
         )
         self.worker_state = WorkerState()
 
@@ -287,6 +292,11 @@ class TelegramControlBot:
             raise TelegramBridgeError("Missing DUREX_TELEGRAM_BOT_TOKEN.")
         if not chat_id:
             raise TelegramBridgeError("Missing DUREX_TELEGRAM_CHAT_ID.")
+        if worker_telegram_approvals:
+            raise TelegramBridgeError(
+                "--worker-telegram-approvals is not supported with telegram-control yet. "
+                "It would create competing Telegram getUpdates consumers."
+            )
 
         if allowed_workdirs is None:
             raw = os.environ.get("DUREX_TELEGRAM_ALLOWED_WORKDIRS", os.getcwd())
@@ -412,13 +422,21 @@ class TelegramControlBot:
         """Poll Telegram messages forever and route authorized commands."""
 
         self.send("Durex Telegram control is online. Send /help.")
+        retry_delay = self.config.retry_base_seconds
         while True:
-            updates = self.bridge.poll_updates(
-                timeout=self.config.poll_timeout_seconds,
-                allowed_updates=["message"],
-            )
-            for update in updates:
-                self.handle_update(update)
+            try:
+                updates = self.bridge.poll_updates(
+                    timeout=self.config.poll_timeout_seconds,
+                    allowed_updates=["message"],
+                )
+                retry_delay = self.config.retry_base_seconds
+                for update in updates:
+                    self.handle_update(update)
+            except TelegramBridgeError as exc:
+                with self.worker_state.lock:
+                    self.worker_state.last_error = str(exc)
+                time.sleep(retry_delay)
+                retry_delay = min(retry_delay * 2, self.config.retry_max_seconds)
 
 
 HELP_TEXT = """Durex Telegram control

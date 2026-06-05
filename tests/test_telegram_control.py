@@ -4,10 +4,12 @@ Tests for Telegram remote control command routing.
 
 import tempfile
 from pathlib import Path
+import os
 import unittest
+from unittest import mock
 
 import codex_queue
-from telegram_bridge import TelegramBridgeConfig
+from telegram_bridge import TelegramBridgeConfig, TelegramBridgeError
 from telegram_control import (
     TelegramControlError,
     TelegramControlBot,
@@ -25,6 +27,20 @@ class FakeBridge:
     def send_message(self, text, reply_markup=None):
         self.messages.append(text)
         return len(self.messages)
+
+
+class FlakyBridge(FakeBridge):
+    def __init__(self, chat_id=123):
+        super().__init__(chat_id=chat_id)
+        self.poll_calls = 0
+
+    def poll_updates(self, timeout=20, allowed_updates=None):
+        self.poll_calls += 1
+        if self.poll_calls == 1:
+            raise TelegramBridgeError("temporary network failure")
+        if self.poll_calls == 2:
+            return [{"message": {"chat": {"id": 123}, "text": "/status"}}]
+        raise KeyboardInterrupt
 
 
 class TelegramControlTests(unittest.TestCase):
@@ -129,6 +145,33 @@ class TelegramControlTests(unittest.TestCase):
         response = bot.handle_update({"message": {"chat": {"id": 123}, "text": "/status@DurexBot"}})
 
         self.assertIn("Durex status", response)
+
+    def test_worker_telegram_approvals_are_rejected_for_control_mode(self):
+        with mock.patch.dict(
+            os.environ,
+            {"DUREX_TELEGRAM_BOT_TOKEN": "token", "DUREX_TELEGRAM_CHAT_ID": "123"},
+            clear=True,
+        ):
+            with self.assertRaises(TelegramBridgeError):
+                TelegramControlBot.from_env(worker_telegram_approvals=True)
+
+    def test_run_forever_retries_after_temporary_poll_error(self):
+        bridge = FlakyBridge(chat_id=123)
+        bot = TelegramControlBot(
+            bridge=bridge,
+            config=TelegramControlConfig(
+                allowed_workdirs=[self.tmp.name],
+                retry_base_seconds=0,
+                retry_max_seconds=0,
+            ),
+        )
+
+        with self.assertRaises(KeyboardInterrupt):
+            bot.run_forever()
+
+        self.assertEqual(bridge.poll_calls, 3)
+        self.assertIn("temporary network failure", bot.worker_state.last_error)
+        self.assertTrue(any(message.startswith("Durex status") for message in bridge.messages))
 
 
 if __name__ == "__main__":

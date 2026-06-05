@@ -666,7 +666,10 @@ def main() -> None:
     control.add_argument(
         "--worker-telegram-approvals",
         action="store_true",
-        help="Enable existing Telegram approval prompts inside worker tasks.",
+        help=(
+            "Reserved for a future shared Telegram update dispatcher. "
+            "Currently rejected in telegram-control mode."
+        ),
     )
     control.add_argument(
         "--telegram-verbosity",
@@ -729,6 +732,12 @@ def main() -> None:
     if args.command == "telegram-control":
         sys.modules.setdefault("codex_queue", sys.modules[__name__])
         from telegram_control import TelegramControlBot
+
+        if args.worker_telegram_approvals:
+            parser.error(
+                "telegram-control --worker-telegram-approvals is not supported yet because it "
+                "would create competing Telegram getUpdates consumers."
+            )
 
         init_db()
         bot = TelegramControlBot.from_env(

@@ -48,7 +48,9 @@ event unless the terminal shows a new approval prompt.
 ## Regression Coverage
 
 - `tests/test_approval_detector.py` verifies that unrelated context growth does
-  not change a request id.
+  not change a request id when a command is known.
+- `tests/test_approval_detector.py` verifies that generic prompts remain
+  distinct when no command can be extracted.
 - `tests/test_approval_detector.py` verifies that ordinary text containing
   `approve` is not treated as a prompt.
 - `tests/test_codex_queue.py` verifies that session extraction returns the
@@ -58,14 +60,15 @@ event unless the terminal shows a new approval prompt.
 
 ## Local Verification
 
-The repository can be checked without network access:
+The repository can be checked without network access. All tests are compatible
+with `unittest discover`:
 
 ```bash
 python3 -m unittest discover -s tests -v
 python3 -m py_compile approval_detector.py approval_policy.py pty_runner.py telegram_bridge.py codex_queue.py
 ```
 
-When `pytest` is installed, run:
+When `pytest` is installed, this should also work:
 
 ```bash
 python3 -m pytest -q
