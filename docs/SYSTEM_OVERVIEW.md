@@ -64,7 +64,7 @@ flowchart TD
     Bridge -->|ApprovalDecision| PTY
     PTY -->|write y or n, or stop| Codex
     Subprocess -->|output and return code| DB
-    PTY -->|output, return code, approval events| DB
+    PTY -->|output and return code| DB
 ```
 
 ### Map nodes
@@ -160,6 +160,10 @@ runner writes `y\n`, writes `n\n`, or terminates the process.
 `subprocess runner -> SQLite task queue` and `pty_runner.py -> SQLite task queue`
 are triggered when task output, exit status, resume information, or errors are
 recorded.
+
+`pty_runner.py` also returns approval events in memory as part of the PTY result.
+Those events are not persisted to SQLite today; storing them in an audit table is
+planned for stronger approval history.
 
 Details:
 

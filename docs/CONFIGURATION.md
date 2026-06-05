@@ -116,25 +116,34 @@ runner:
 
 ### mode
 
-Allowed values:
+Current values:
 
 ```text
+subprocess
 pty
-events
 ```
 
 Meaning:
 
 | Value | Meaning |
 |---|---|
+| `subprocess` | Run Codex as a non-interactive child process |
 | `pty` | Run Codex inside a pseudo-terminal |
-| `events` | Use structured event mode when available |
 
 Recommended v0.2 value:
 
 ```yaml
 mode: pty
 ```
+
+Planned future value:
+
+```text
+events
+```
+
+`events` is reserved for a future structured-event runner. It is not a current
+`codex_queue.py run --runner-mode` value.
 
 ---
 
