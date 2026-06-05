@@ -227,10 +227,14 @@ def extract_session_id(text: str) -> Optional[str]:
         r"resum(?:e|ing).*?([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})",
     ]
 
+    matches: list[tuple[int, str]] = []
+
     for pattern in patterns:
-        match = re.search(pattern, text, re.IGNORECASE)
-        if match:
-            return match.group(1)
+        for match in re.finditer(pattern, text, re.IGNORECASE):
+            matches.append((match.start(1), match.group(1)))
+
+    if matches:
+        return max(matches, key=lambda item: item[0])[1]
 
     return None
 

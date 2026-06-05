@@ -9,6 +9,7 @@ from approval_detector import (
     detect_approval_request,
     extract_command,
     make_request_id,
+    prompt_signature,
     redact_for_display,
     strip_ansi,
 )
@@ -59,6 +60,41 @@ Approve? [y/N]
 def test_returns_none_when_no_approval_prompt_exists():
     text = "All tests passed. Nothing to approve here."
     assert detect_approval_request(text) is None
+
+
+def test_request_id_ignores_unrelated_context_growth():
+    first_context = """
+Preparing work
+Command: pytest -q
+Approve this command? [y/N]
+"""
+    second_context = """
+Preparing work
+Still collecting terminal output
+Command: pytest -q
+Approve this command? [y/N]
+"""
+
+    first = make_request_id("pytest -q", first_context)
+    second = make_request_id("pytest -q", second_context)
+
+    assert first == second
+
+
+def test_prompt_signature_uses_prompt_line_not_full_context():
+    context = """
+one
+two
+Command: ruff check .
+Approve this command? [y/N]
+"""
+
+    signature = prompt_signature("ruff check .", context)
+
+    assert "ruff check ." in signature
+    assert "Approve this command? [y/N]" in signature
+    assert "one" not in signature
+    assert "two" not in signature
 
 
 def test_redacts_obvious_secret_values():

@@ -174,8 +174,8 @@ def looks_like_approval_prompt(text: str) -> bool:
         r"\(y/n\)",
         r"\(yes/no\)",
         r"\byes/no\b",
-        r"\bapprove\b",
-        r"\bapproval\b",
+        r"\bapprove\b.*\?",
+        r"\bapproval\b.*\?",
         r"\bproceed\b.*\?",
         r"\bcontinue\b.*\?",
         r"\brun\b.*\bcommand\b.*\?",
@@ -185,6 +185,44 @@ def looks_like_approval_prompt(text: str) -> bool:
     ]
 
     return any(re.search(pattern, recent, re.IGNORECASE) for pattern in patterns)
+
+
+def prompt_signature(command: Optional[str], context: str) -> str:
+    """
+    Return the stable part of an approval prompt for fingerprinting.
+
+    The displayed context grows while a PTY process is running, so hashing the
+    whole tail makes the same prompt look like different requests. We instead
+    use the extracted command plus the last line that looks like the actual
+    confirmation prompt.
+    """
+
+    prompt_patterns = [
+        r"\[[yn]/[yn]\]",
+        r"\(y/n\)",
+        r"\(yes/no\)",
+        r"\byes/no\b",
+        r"\bapprove\b.*\?",
+        r"\bapproval\b.*\?",
+        r"\bproceed\b.*\?",
+        r"\bcontinue\b.*\?",
+        r"\brun\b.*\bcommand\b.*\?",
+        r"\bexecute\b.*\bcommand\b.*\?",
+        r"\ballow\b.*\?",
+        r"\bconfirm\b.*\?",
+    ]
+    lines = [line.strip() for line in strip_ansi(context).splitlines() if line.strip()]
+    prompt_line = ""
+
+    for line in reversed(lines):
+        if any(re.search(pattern, line, re.IGNORECASE) for pattern in prompt_patterns):
+            prompt_line = line
+            break
+
+    if not prompt_line:
+        prompt_line = "\n".join(lines[-3:])
+
+    return f"{normalize_text(command or '')}\n{normalize_text(prompt_line)}"
 
 
 def extract_command(text: str) -> Optional[str]:
@@ -223,7 +261,7 @@ def extract_command(text: str) -> Optional[str]:
             match = re.search(pattern, line, re.IGNORECASE)
             if match:
                 command = match.group(1).strip()
-                if command:
+                if command and command not in {":", "-"}:
                     return redact_for_display(command)
 
     for line in reversed(lines):
@@ -251,7 +289,7 @@ def make_request_id(command: Optional[str], context: str) -> str:
     last request_id values it sent and avoid duplicate Telegram notifications.
     """
 
-    base = f"{command or ''}\n{normalize_text(context)}"
+    base = prompt_signature(command, context)
     return hashlib.sha256(base.encode("utf-8")).hexdigest()[:16]
 
 
