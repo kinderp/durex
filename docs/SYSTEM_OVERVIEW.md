@@ -5,6 +5,9 @@ This document is the entry point for understanding the whole Durex system.
 Use it as a map. It explains what each Python file owns, how the main runtime
 flows connect, and where to go for deeper detail in the other Markdown files.
 
+For step-by-step usage, command examples, and practical workflows, start with
+[USER_GUIDE.md](USER_GUIDE.md).
+
 ---
 
 ## How to read this document
@@ -553,14 +556,15 @@ Details:
 For a first full understanding:
 
 1. read this document end to end;
-2. read [README.md](../README.md) for commands and setup;
-3. read [ARCHITECTURE.md](ARCHITECTURE.md) for component and data-model detail;
-4. read [SEQUENCE_DIAGRAMS.md](SEQUENCE_DIAGRAMS.md) for runtime behavior;
-5. read [TELEGRAM_APPROVALS.md](TELEGRAM_APPROVALS.md) and
+2. read [USER_GUIDE.md](USER_GUIDE.md) for commands and workflows;
+3. read [README.md](../README.md) for the project summary;
+4. read [ARCHITECTURE.md](ARCHITECTURE.md) for component and data-model detail;
+5. read [SEQUENCE_DIAGRAMS.md](SEQUENCE_DIAGRAMS.md) for runtime behavior;
+6. read [TELEGRAM_APPROVALS.md](TELEGRAM_APPROVALS.md) and
    [TELEGRAM_REMOTE_CONTROL.md](TELEGRAM_REMOTE_CONTROL.md) for Telegram;
-6. read [PTY_VS_EVENTS.md](PTY_VS_EVENTS.md) to understand current PTY choices
+7. read [PTY_VS_EVENTS.md](PTY_VS_EVENTS.md) to understand current PTY choices
    and future structured-event direction;
-7. read [CONFIGURATION.md](CONFIGURATION.md) and [ROADMAP.md](ROADMAP.md) for
+8. read [CONFIGURATION.md](CONFIGURATION.md) and [ROADMAP.md](ROADMAP.md) for
    planned evolution.
 
 For code reading:
