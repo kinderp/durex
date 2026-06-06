@@ -5,7 +5,7 @@ Build the Sphinx HTML API documentation for Durex.
 The script is intentionally small and dependency-light. It gives maintainers one
 stable command to run after changing Python docstrings:
 
-    python3 scripts/build_api_docs.py
+    .venv/bin/python scripts/build_api_docs.py
 
 By default the build runs in warning-as-error mode so malformed docstrings,
 broken imports, or invalid references fail early.
@@ -75,8 +75,10 @@ def build_docs(strict: bool = True, fresh_env: bool = False) -> int:
         from sphinx.cmd.build import build_main
     except ModuleNotFoundError as exc:
         raise RuntimeError(
-            "Sphinx is not installed. Install development dependencies with "
-            "`python3 -m pip install -r requirements-dev.txt`."
+            "Sphinx is not installed in the current Python environment. "
+            "Create the local virtualenv with `python3 -m venv .venv`, then "
+            "install development dependencies with "
+            "`.venv/bin/python -m pip install -r requirements-dev.txt`."
         ) from exc
 
     args = ["-b", "html"]

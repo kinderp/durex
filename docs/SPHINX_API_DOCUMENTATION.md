@@ -1,7 +1,7 @@
-# Sphinx API Documentation Roadmap
+# Sphinx API Documentation
 
-This document explains how the current Python docstrings are prepared for a
-future Sphinx-generated HTML API reference.
+This document explains how Durex generates the current Sphinx HTML API
+reference from Python docstrings.
 
 ## Current documentation contract
 
@@ -60,7 +60,7 @@ compact API tables. `napoleon` renders the Google-style docstrings currently
 used in the codebase. `viewcode` links generated documentation back to source
 code.
 
-## Initial API modules
+## API modules
 
 The generated runtime reference includes the application modules:
 
@@ -140,9 +140,8 @@ Sphinx to discard its cached environment and reread every module from scratch.
 A future commit can make API documentation stricter and more automated by
 adding:
 
-- a CI check or local script that runs the warning-as-error Sphinx build;
 - optional `sphinx-apidoc` or `autosummary_generate` support once the package
-  layout is formalized.
+  layout is formalized;
 - an optional generated API reference diff check for release branches;
 - a package layout so modules can be imported through a stable `durex.*`
   namespace instead of top-level module names.
