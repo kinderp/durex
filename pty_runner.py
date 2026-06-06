@@ -85,6 +85,25 @@ class ApprovalAuditEvent:
 
     These objects are returned in PtyRunResult. A future version can persist
     them in SQLite or write them to an audit log file.
+
+    Attributes:
+        request_id:
+            Detector fingerprint for the prompt that was handled.
+        command:
+            Command associated with the prompt, when extraction succeeded.
+        policy_action:
+            Policy action selected before any Telegram interaction.
+        final_action:
+            Action actually applied to the terminal prompt.
+        source:
+            Origin of the final action, such as policy, telegram, timeout or
+            system_no_telegram.
+        reason:
+            Human-facing policy reason.
+        matched_rule:
+            Policy rule pattern that matched, when any.
+        created_at:
+            Local Unix timestamp for the audit event.
     """
 
     request_id: str
@@ -126,6 +145,15 @@ class PtyRunnerError(RuntimeError):
 def trim_buffer(buffer: str, max_chars: int) -> str:
     """
     Keep only the last max_chars characters of a rolling terminal buffer.
+
+    Args:
+        buffer:
+            Current rolling terminal text.
+        max_chars:
+            Maximum number of characters kept for prompt detection.
+
+    Returns:
+        The original buffer when it is small enough, otherwise its tail.
     """
 
     if len(buffer) <= max_chars:
@@ -138,6 +166,15 @@ def write_to_pty(master_fd: int, text: str) -> None:
     Write text into the PTY master file descriptor.
 
     The child process receives this as if the user typed it in the terminal.
+
+    Args:
+        master_fd:
+            PTY master file descriptor owned by the parent process.
+        text:
+            Text to deliver to the child process through terminal input.
+
+    Returns:
+        None.
     """
 
     os.write(master_fd, text.encode("utf-8", errors="replace"))
@@ -150,6 +187,14 @@ def action_to_terminal_input(action: TelegramDecisionAction | PolicyAction) -> O
     Approval prompts usually accept a positive or negative confirmation. The PTY
     runner sends a newline after the character because that is what a user would
     normally type.
+
+    Args:
+        action:
+            Final decision from either the local policy engine or Telegram.
+
+    Returns:
+        Terminal input to write into the PTY, or None for actions that do not
+        map to direct prompt input.
     """
 
     if action in (TelegramDecisionAction.APPROVE, PolicyAction.AUTO_ALLOW):
@@ -169,6 +214,18 @@ def build_telegram_request(
 
     The PTY runner can be used both from codex_queue.py and standalone tests.
     For that reason task is optional and accessed as a plain dictionary.
+
+    Args:
+        task:
+            Optional queue task metadata.
+        approval:
+            Detector-level approval request.
+        verbosity:
+            Telegram message verbosity requested by the caller.
+
+    Returns:
+        TelegramApprovalRequest with task metadata attached for user-facing
+        approval messages.
     """
 
     task = task or {}
@@ -193,6 +250,21 @@ def record_audit_event(
 ) -> None:
     """
     Append one normalized approval event to the in-memory audit list.
+
+    Args:
+        events:
+            Mutable audit list owned by the current PTY run.
+        approval:
+            Detector request that triggered the decision.
+        policy_decision:
+            Local policy classification result.
+        final_action:
+            Action finally applied to the child terminal.
+        source:
+            Source of that final action.
+
+    Returns:
+        None. The function mutates ``events`` in place.
     """
 
     events.append(
@@ -213,6 +285,15 @@ def terminate_process(process: subprocess.Popen, timeout_seconds: float = 5.0) -
     Try to stop the child process gracefully, then force-stop if needed.
 
     This is used when Telegram returns the STOP action.
+
+    Args:
+        process:
+            Child process attached to the PTY.
+        timeout_seconds:
+            Grace period after terminate() before kill() is used.
+
+    Returns:
+        Final process return code.
     """
 
     if process.poll() is not None:
@@ -240,6 +321,21 @@ def spawn_pty_process(cmd: Sequence[str], cwd: Optional[str] = None) -> tuple[su
 
     master_fd is the file descriptor the parent uses to read terminal output and
     write terminal input.
+
+    Args:
+        cmd:
+            Command argument vector to execute.
+        cwd:
+            Optional working directory for the child process.
+
+    Returns:
+        Tuple containing the subprocess object and the PTY master file
+        descriptor.
+
+    Raises:
+        Exception:
+            Propagates subprocess startup errors after closing both PTY file
+            descriptors.
     """
 
     master_fd, slave_fd = pty.openpty()
@@ -279,6 +375,22 @@ def handle_approval_request(
     Returns:
         True when the caller should continue reading the PTY.
         False when the caller should stop the task process.
+
+    Args:
+        master_fd:
+            PTY master file descriptor used to answer prompts.
+        approval:
+            Detector request that needs a decision.
+        policy:
+            Local policy engine.
+        telegram_bridge:
+            Optional Telegram bridge for human-in-the-loop decisions.
+        task:
+            Optional queue metadata for Telegram message context.
+        telegram_verbosity:
+            Message detail level for Telegram approval requests.
+        audit_events:
+            Mutable audit list for the current PTY run.
     """
 
     policy_decision = policy.classify_command(approval.command)

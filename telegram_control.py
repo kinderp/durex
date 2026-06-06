@@ -29,7 +29,21 @@ MAX_TELEGRAM_MESSAGE_CHARS = 3900
 
 @dataclass(frozen=True)
 class AddCommand:
-    """Parsed /add command payload."""
+    """
+    Parsed /add command payload.
+
+    Attributes:
+        title:
+            Queue task title.
+        prompt:
+            Prompt body sent to Codex.
+        workdir:
+            Resolved working directory requested by the Telegram user.
+        priority:
+            Queue priority; lower values run earlier.
+        max_attempts:
+            Maximum retry attempts for non-limit failures.
+    """
 
     title: str
     prompt: str
@@ -40,7 +54,29 @@ class AddCommand:
 
 @dataclass(frozen=True)
 class TelegramControlConfig:
-    """Runtime settings for Telegram remote control."""
+    """
+    Runtime settings for Telegram remote control.
+
+    Attributes:
+        allowed_workdirs:
+            Absolute or user-supplied root directories accepted for remote
+            ``/add`` commands.
+        runner_mode:
+            Worker backend started by ``/run``.
+        worker_telegram_approvals:
+            Reserved flag for future shared update dispatching.
+        telegram_verbosity:
+            Approval verbosity that will be passed to the worker once shared
+            Telegram approvals are supported.
+        echo_output:
+            Whether PTY output should also be printed locally.
+        poll_timeout_seconds:
+            Telegram long-poll timeout for control messages.
+        retry_base_seconds:
+            Initial retry delay after transient Telegram failures.
+        retry_max_seconds:
+            Maximum retry delay after repeated Telegram failures.
+    """
 
     allowed_workdirs: list[str]
     runner_mode: str = "pty"
@@ -54,7 +90,19 @@ class TelegramControlConfig:
 
 @dataclass
 class WorkerState:
-    """Small in-memory state for a background worker run."""
+    """
+    Small in-memory state for a background worker run.
+
+    Attributes:
+        lock:
+            Synchronizes access to thread state and stop/error flags.
+        thread:
+            Background worker thread, if one has been started.
+        stop_after_current:
+            Cooperative stop flag checked between queue tasks.
+        last_error:
+            Last worker or polling error exposed through ``/status``.
+    """
 
     lock: threading.Lock = field(default_factory=threading.Lock)
     thread: Optional[threading.Thread] = None
@@ -62,6 +110,13 @@ class WorkerState:
     last_error: Optional[str] = None
 
     def is_running(self) -> bool:
+        """
+        Return whether the background worker thread is currently alive.
+
+        Returns:
+            True when a worker thread exists and is still running.
+        """
+
         with self.lock:
             return self.thread is not None and self.thread.is_alive()
 
@@ -74,11 +129,38 @@ class TelegramArgumentParser(argparse.ArgumentParser):
     """ArgumentParser variant that reports errors without exiting the daemon."""
 
     def error(self, message: str) -> None:
+        """
+        Convert argparse parse errors into TelegramControlError.
+
+        Args:
+            message:
+                Parser-generated error message.
+
+        Returns:
+            None.
+
+        Raises:
+            TelegramControlError:
+                Always raised instead of exiting the daemon process.
+        """
+
         raise TelegramControlError(message)
 
 
 def truncate_message(text: str, max_chars: int = MAX_TELEGRAM_MESSAGE_CHARS) -> str:
-    """Keep messages inside Telegram's message-size limit with room to spare."""
+    """
+    Keep messages inside Telegram's message-size limit with room to spare.
+
+    Args:
+        text:
+            Message body to send.
+        max_chars:
+            Maximum retained characters.
+
+    Returns:
+        Original text when it fits, otherwise the tail. The tail is preferred
+        for task output because recent output is usually the actionable part.
+    """
 
     if len(text) <= max_chars:
         return text
@@ -86,13 +168,34 @@ def truncate_message(text: str, max_chars: int = MAX_TELEGRAM_MESSAGE_CHARS) -> 
 
 
 def normalize_allowed_workdirs(paths: list[str]) -> list[str]:
-    """Return absolute allowed workdir roots."""
+    """
+    Return absolute allowed workdir roots.
+
+    Args:
+        paths:
+            User-supplied or environment-derived workdir roots.
+
+    Returns:
+        Absolute, expanded paths used by authorization checks.
+    """
 
     return [str(Path(path).expanduser().resolve()) for path in paths]
 
 
 def path_is_allowed(path: str, allowed_roots: list[str]) -> bool:
-    """Return True when path is inside one of the configured allowed roots."""
+    """
+    Return True when path is inside one of the configured allowed roots.
+
+    Args:
+        path:
+            Requested working directory.
+        allowed_roots:
+            Absolute allowed root directories.
+
+    Returns:
+        True when ``path`` resolves under an allowed root. This is the main
+        filesystem boundary for Telegram-created tasks.
+    """
 
     resolved = Path(path).expanduser().resolve()
     for root in allowed_roots:
@@ -105,14 +208,33 @@ def path_is_allowed(path: str, allowed_roots: list[str]) -> bool:
 
 
 def default_title(prompt: str) -> str:
-    """Build a compact task title when /add omits one."""
+    """
+    Build a compact task title when /add omits one.
+
+    Args:
+        prompt:
+            Telegram prompt body.
+
+    Returns:
+        First non-empty prompt line truncated for queue display.
+    """
 
     first_line = next((line.strip() for line in prompt.splitlines() if line.strip()), "Remote Codex task")
     return first_line[:80]
 
 
 def base_command(command: str) -> str:
-    """Return Telegram command without an optional @BotName suffix."""
+    """
+    Return Telegram command without an optional @BotName suffix.
+
+    Args:
+        command:
+            Raw Telegram command token.
+
+    Returns:
+        Command name normalized for both private chats and bot-suffixed group
+        commands.
+    """
 
     return command.split("@", 1)[0]
 
@@ -125,6 +247,20 @@ def parse_add_command(text: str, default_workdir: str = ".") -> AddCommand:
 
         /add --title "Fix tests" --workdir /repo --priority 10
         Prompt text for Codex...
+
+    Args:
+        text:
+            Full Telegram message text.
+        default_workdir:
+            Workdir used when the command omits ``--workdir``.
+
+    Returns:
+        Parsed AddCommand. Authorization is intentionally not performed here;
+        callers must check the resolved workdir against allowed roots.
+
+    Raises:
+        TelegramControlError:
+            Raised for syntax errors, non-/add commands or missing prompt body.
     """
 
     header, separator, prompt = text.partition("\n")
@@ -155,7 +291,12 @@ def parse_add_command(text: str, default_workdir: str = ".") -> AddCommand:
 
 
 def task_counts() -> dict[str, int]:
-    """Return task counts by status."""
+    """
+    Return task counts by status.
+
+    Returns:
+        Mapping from queue status to number of tasks in that status.
+    """
 
     codex_queue.init_db()
     with codex_queue.connect() as con:
@@ -164,7 +305,18 @@ def task_counts() -> dict[str, int]:
 
 
 def format_status(worker_running: bool, last_error: Optional[str]) -> str:
-    """Build a compact status message."""
+    """
+    Build a compact status message.
+
+    Args:
+        worker_running:
+            Current in-memory worker state.
+        last_error:
+            Last worker or polling error, if any.
+
+    Returns:
+        Telegram-friendly queue and worker status text.
+    """
 
     counts = task_counts()
     parts = ["Durex status", f"Worker: {'running' if worker_running else 'idle'}"]
@@ -176,7 +328,16 @@ def format_status(worker_running: bool, last_error: Optional[str]) -> str:
 
 
 def list_recent_tasks(limit: int = DEFAULT_TASK_LIMIT) -> str:
-    """Return a Telegram-friendly task list."""
+    """
+    Return a Telegram-friendly task list.
+
+    Args:
+        limit:
+            Maximum number of latest tasks to include.
+
+    Returns:
+        Plain-text list ordered by newest task first.
+    """
 
     codex_queue.init_db()
     with codex_queue.connect() as con:
@@ -200,7 +361,18 @@ def list_recent_tasks(limit: int = DEFAULT_TASK_LIMIT) -> str:
 
 
 def tail_task_output(task_id: Optional[int] = None, chars: int = 2500) -> str:
-    """Return the tail of one task output, defaulting to the latest task."""
+    """
+    Return the tail of one task output, defaulting to the latest task.
+
+    Args:
+        task_id:
+            Optional task id. When omitted, the latest task is selected.
+        chars:
+            Maximum output characters before Telegram truncation.
+
+    Returns:
+        Task output/error tail or a human-readable not-found/no-output message.
+    """
 
     codex_queue.init_db()
     with codex_queue.connect() as con:
@@ -228,7 +400,21 @@ def run_worker_until_empty(
     config: TelegramControlConfig,
     notify: Callable[[str], None],
 ) -> None:
-    """Run ready queue tasks in a background thread until no task is runnable."""
+    """
+    Run ready queue tasks in a background thread until no task is runnable.
+
+    Args:
+        state:
+            Shared worker state and cooperative stop flag.
+        config:
+            Runtime control configuration.
+        notify:
+            Callback used to send status messages back to Telegram.
+
+    Returns:
+        None. Worker completion or errors are reported through ``notify`` and
+        ``state``.
+    """
 
     try:
         codex_queue.init_db()
@@ -259,9 +445,28 @@ def run_worker_until_empty(
 
 
 class TelegramControlBot:
-    """Telegram message-command router for Durex."""
+    """
+    Telegram message-command router for Durex.
+
+    The bot maps authorized chat messages to queue operations. It deliberately
+    does not expose arbitrary shell execution: every remote action either reads
+    queue state, creates a queued Codex task, or starts/stops the worker.
+    """
 
     def __init__(self, bridge: TelegramApprovalBridge, config: TelegramControlConfig) -> None:
+        """
+        Initialize the Telegram control bot.
+
+        Args:
+            bridge:
+                Telegram bridge used for polling and replies.
+            config:
+                Control runtime configuration.
+
+        Returns:
+            None.
+        """
+
         self.bridge = bridge
         self.config = TelegramControlConfig(
             allowed_workdirs=normalize_allowed_workdirs(config.allowed_workdirs),
@@ -284,7 +489,30 @@ class TelegramControlBot:
         telegram_verbosity: str = "normal",
         echo_output: bool = False,
     ) -> "TelegramControlBot":
-        """Build a control bot from Durex Telegram environment variables."""
+        """
+        Build a control bot from Durex Telegram environment variables.
+
+        Args:
+            allowed_workdirs:
+                Optional allowed workdir roots. When omitted, the environment
+                or current directory supplies the boundary.
+            runner_mode:
+                Worker backend used by remote ``/run``.
+            worker_telegram_approvals:
+                Reserved flag rejected until Telegram update dispatch is shared.
+            telegram_verbosity:
+                Future worker approval verbosity.
+            echo_output:
+                Whether worker PTY output is mirrored locally.
+
+        Returns:
+            Configured TelegramControlBot.
+
+        Raises:
+            TelegramBridgeError:
+                Raised when required environment variables are missing or when
+                unsupported shared Telegram approval mode is requested.
+        """
 
         token = os.environ.get("DUREX_TELEGRAM_BOT_TOKEN")
         chat_id = os.environ.get("DUREX_TELEGRAM_CHAT_ID")
@@ -317,12 +545,26 @@ class TelegramControlBot:
         )
 
     def send(self, text: str) -> None:
-        """Send one control message to Telegram."""
+        """
+        Send one control message to Telegram.
+
+        Args:
+            text:
+                Response text produced by command handling.
+
+        Returns:
+            None.
+        """
 
         self.bridge.send_message(truncate_message(text))
 
     def start_worker(self) -> str:
-        """Start the background Durex worker if it is not already running."""
+        """
+        Start the background Durex worker if it is not already running.
+
+        Returns:
+            Human-readable status message for Telegram.
+        """
 
         with self.worker_state.lock:
             if self.worker_state.thread is not None and self.worker_state.thread.is_alive():
@@ -340,14 +582,33 @@ class TelegramControlBot:
             return "Worker started."
 
     def stop_worker_after_current(self) -> str:
-        """Request worker stop before the next task starts."""
+        """
+        Request worker stop before the next task starts.
+
+        Returns:
+            Human-readable acknowledgement for Telegram.
+        """
 
         with self.worker_state.lock:
             self.worker_state.stop_after_current = True
         return "Worker will stop before starting another task."
 
     def handle_text(self, text: str) -> str:
-        """Handle one authorized Telegram message text."""
+        """
+        Handle one authorized Telegram message text.
+
+        Args:
+            text:
+                Message text from the authorized Telegram chat.
+
+        Returns:
+            Response text that should be sent back to Telegram.
+
+        Raises:
+            TelegramControlError:
+                Raised for rejected command payloads. ``handle_update`` catches
+                it and converts it to a user-facing rejection message.
+        """
 
         stripped = text.strip()
         parts = stripped.split()
@@ -391,7 +652,16 @@ class TelegramControlBot:
         return "Unknown command. Send /help."
 
     def handle_update(self, update: dict) -> Optional[str]:
-        """Process one Telegram update and return the response text, if any."""
+        """
+        Process one Telegram update and return the response text, if any.
+
+        Args:
+            update:
+                Raw Telegram update dictionary.
+
+        Returns:
+            Response text for handled authorized messages, otherwise None.
+        """
 
         message = update.get("message")
         if not message:
@@ -419,7 +689,12 @@ class TelegramControlBot:
         return response
 
     def run_forever(self) -> None:
-        """Poll Telegram messages forever and route authorized commands."""
+        """
+        Poll Telegram messages forever and route authorized commands.
+
+        Returns:
+            None. The loop is intended to run until the process is interrupted.
+        """
 
         self.send("Durex Telegram control is online. Send /help.")
         retry_delay = self.config.retry_base_seconds
@@ -453,6 +728,13 @@ Remote control does not execute shell input directly."""
 
 
 def _demo() -> None:
+    """
+    Run the Telegram control bot from environment configuration.
+
+    Returns:
+        None.
+    """
+
     bot = TelegramControlBot.from_env()
     bot.run_forever()
 

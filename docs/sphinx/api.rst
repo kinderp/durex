@@ -1,0 +1,55 @@
+Runtime Modules
+===============
+
+The runtime modules are the public implementation surface for the current Durex
+tool. They are documented here with ``automodule`` so Sphinx extracts module
+docstrings, classes, dataclasses, functions, methods, arguments, return values,
+exceptions, and source links.
+
+approval_detector
+-----------------
+
+.. automodule:: approval_detector
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+approval_policy
+---------------
+
+.. automodule:: approval_policy
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+codex_queue
+-----------
+
+.. automodule:: codex_queue
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+pty_runner
+----------
+
+.. automodule:: pty_runner
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+telegram_bridge
+---------------
+
+.. automodule:: telegram_bridge
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+telegram_control
+----------------
+
+.. automodule:: telegram_control
+   :members:
+   :undoc-members:
+   :show-inheritance:

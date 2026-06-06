@@ -1,2 +1,5 @@
 __pycache__/
 tests/__pycache__/
+docs/_build/
+.venv/
+.DS_Store

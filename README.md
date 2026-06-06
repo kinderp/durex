@@ -93,6 +93,7 @@ More diagrams are available in:
 - [`docs/TELEGRAM_REMOTE_CONTROL.md`](docs/TELEGRAM_REMOTE_CONTROL.md)
 - [`docs/SESSION_APPROVAL_DEDUP.md`](docs/SESSION_APPROVAL_DEDUP.md)
 - [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md)
+- [`docs/SPHINX_API_DOCUMENTATION.md`](docs/SPHINX_API_DOCUMENTATION.md)
 - [`docs/ROADMAP.md`](docs/ROADMAP.md)
 
 ## Requirements
@@ -116,6 +117,14 @@ Check Codex:
 codex --help
 ```
 
+Install development documentation dependencies when you need to build the API
+reference:
+
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements-dev.txt
+```
+
 ## Repository layout
 
 ```text
@@ -127,6 +136,7 @@ codex --help
 ├── telegram_control.py         # Telegram remote-control command router
 ├── pty_runner.py               # PTY runner and approval pipeline
 ├── config.example.yaml         # Planned v0.2 configuration shape
+├── requirements-dev.txt        # Development documentation dependencies
 ├── tests/
 │   ├── test_approval_detector.py
 │   ├── test_codex_queue.py
@@ -140,6 +150,7 @@ codex --help
     ├── ROADMAP.md
     ├── SESSION_APPROVAL_DEDUP.md
     ├── SEQUENCE_DIAGRAMS.md
+    ├── SPHINX_API_DOCUMENTATION.md
     ├── TELEGRAM_REMOTE_CONTROL.md
     └── TELEGRAM_APPROVALS.md
 ```
@@ -508,6 +519,27 @@ Check that the user guide mentions every current CLI command and long option:
 python3 scripts/check_cli_docs.py
 ```
 
+## API documentation
+
+The Python API reference is generated from module, class, function, and method
+docstrings with Sphinx.
+
+Install the development dependencies:
+
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements-dev.txt
+```
+
+Generate strict HTML documentation:
+
+```bash
+.venv/bin/python scripts/build_api_docs.py
+```
+
+The generated site is written to `docs/_build/html/`. More details:
+[`docs/SPHINX_API_DOCUMENTATION.md`](docs/SPHINX_API_DOCUMENTATION.md).
+
 Manual demos:
 
 ```bash
@@ -578,6 +610,7 @@ Then add one task per folder. This keeps Codex isolated and avoids mixing files 
 | [`docs/TELEGRAM_REMOTE_CONTROL.md`](docs/TELEGRAM_REMOTE_CONTROL.md) | Telegram queue remote-control mode |
 | [`docs/SESSION_APPROVAL_DEDUP.md`](docs/SESSION_APPROVAL_DEDUP.md) | Session id and approval deduplication fix |
 | [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) | Planned configuration model |
+| [`docs/SPHINX_API_DOCUMENTATION.md`](docs/SPHINX_API_DOCUMENTATION.md) | Sphinx API documentation contract and generation roadmap |
 | [`docs/ROADMAP.md`](docs/ROADMAP.md) | Version roadmap |
 
 ## Roadmap

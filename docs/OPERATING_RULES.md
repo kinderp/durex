@@ -295,6 +295,25 @@ For system docs:
 - explain security boundaries;
 - link to tests or validation where useful.
 
+For Python API documentation:
+
+- every new Python module must include a module-level docstring that explains
+  the module responsibility and the system boundary it owns;
+- every new public class, dataclass, function, and method must include a
+  Sphinx-compatible docstring;
+- docstrings should describe contracts, inputs, outputs, raised errors,
+  dataclass attributes, invariants, and security boundaries;
+- comments and docstrings should explain the concept behind the code, not
+  narrate obvious line-by-line behavior;
+- when changing existing Python behavior, update the affected docstrings in the
+  same commit;
+- when changing existing code docstrings, rebuild the Sphinx API documentation
+  and fix warnings before committing;
+- when adding new Python modules that belong in the public API reference, add
+  them to the Sphinx source files under `docs/sphinx/`;
+- remember that Sphinx currently documents only modules explicitly registered in
+  `docs/sphinx/api.rst` or `docs/sphinx/maintenance.rst`.
+
 ---
 
 ## CLI documentation rules
@@ -335,6 +354,19 @@ For Python code changes:
 ```bash
 python3 -m unittest discover -s tests -v
 python3 -m py_compile approval_detector.py approval_policy.py pty_runner.py telegram_bridge.py telegram_control.py codex_queue.py
+```
+
+For Python docstring changes or new Python API code, also run the Sphinx build:
+
+```bash
+.venv/bin/python scripts/build_api_docs.py --fresh-env
+```
+
+If `.venv` does not exist yet, create it and install development dependencies:
+
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements-dev.txt
 ```
 
 If `pytest` is available:
