@@ -109,6 +109,32 @@ After large docstring restructures, force Sphinx to rebuild its environment:
 .venv/bin/python scripts/build_api_docs.py --fresh-env
 ```
 
+## Manual HTML generation
+
+The generated HTML entry point is:
+
+```text
+docs/_build/html/index.html
+```
+
+To generate it manually from a fresh checkout, create the virtualenv, install
+the development dependencies, and run the Sphinx build:
+
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements-dev.txt
+.venv/bin/python scripts/build_api_docs.py --fresh-env
+```
+
+Use the strict default command for normal validation:
+
+```bash
+.venv/bin/python scripts/build_api_docs.py
+```
+
+Use `--fresh-env` after changing docstrings or Sphinx source files when you want
+Sphinx to discard its cached environment and reread every module from scratch.
+
 ## Future automation
 
 A future commit can make API documentation stricter and more automated by
