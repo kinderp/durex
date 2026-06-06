@@ -363,7 +363,8 @@ def policy_from_dict(data: dict) -> ApprovalPolicy:
     require PyYAML directly; any loader can parse YAML/JSON/TOML into a dict and
     pass the relevant section here.
 
-    Expected shape:
+    Expected shape::
+
         {
           "default_decision": "ask",
           "auto_allow": ["pytest*"],

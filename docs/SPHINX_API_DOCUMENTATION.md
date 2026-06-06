@@ -26,10 +26,9 @@ Inline comments should be used sparingly. They should explain a concept,
 boundary, invariant, or non-obvious design choice. They should not narrate the
 mechanical line-by-line behavior that Python already makes clear.
 
-## Recommended Sphinx structure
+## Sphinx structure
 
-When the API reference is generated, keep the source documentation separate from
-the existing Markdown guides:
+Durex now keeps Sphinx source files separate from the existing Markdown guides:
 
 ```text
 docs/
@@ -37,11 +36,15 @@ docs/
     conf.py
     index.rst
     api.rst
+    maintenance.rst
   _build/
     html/
 ```
 
-The recommended initial Sphinx extensions are:
+The generated HTML lives under `docs/_build/html/`. That directory is ignored by
+Git because it is a generated artifact.
+
+The Sphinx configuration uses:
 
 ```python
 extensions = [
@@ -59,7 +62,7 @@ code.
 
 ## Initial API modules
 
-The first generated reference should include the application modules:
+The generated runtime reference includes the application modules:
 
 - `approval_detector`
 - `approval_policy`
@@ -68,8 +71,8 @@ The first generated reference should include the application modules:
 - `telegram_bridge`
 - `telegram_control`
 
-`scripts.check_cli_docs` can be included in a separate maintenance section
-because it is a repository validation tool, not part of the runtime API.
+`scripts.check_cli_docs` is included in a separate maintenance section because
+it is a repository validation tool, not part of the runtime API.
 
 Tests can be left out of the public API reference. Their docstrings still matter
 because they document the behavioral contracts protected by each regression
@@ -77,30 +80,43 @@ case.
 
 ## Build and validation commands
 
-After adding Sphinx dependencies and scaffolding, generate HTML with:
+Install development dependencies with:
 
 ```bash
-python -m sphinx -b html docs/sphinx docs/_build/html
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements-dev.txt
 ```
 
-For CI or pre-merge validation, use warning-as-error mode:
+Generate HTML with:
 
 ```bash
-python -m sphinx -W -b html docs/sphinx docs/_build/html
+.venv/bin/python scripts/build_api_docs.py
 ```
 
-The stricter command should be the target for future automation because broken
-imports, malformed docstrings, and missing references should fail the
-documentation build early.
+The script runs Sphinx in warning-as-error mode by default. This is the
+recommended pre-merge validation mode because broken imports, malformed
+docstrings, and missing references should fail early.
+
+For a non-strict local preview, run:
+
+```bash
+.venv/bin/python scripts/build_api_docs.py --no-strict
+```
+
+After large docstring restructures, force Sphinx to rebuild its environment:
+
+```bash
+.venv/bin/python scripts/build_api_docs.py --fresh-env
+```
 
 ## Future automation
 
-A future commit can make API documentation reproducible by adding:
+A future commit can make API documentation stricter and more automated by
+adding:
 
-- a development dependency group containing Sphinx and optional docstring
-  helpers;
-- `docs/sphinx/conf.py` with the extensions above;
-- an `api.rst` file with `automodule` directives for each application module;
 - a CI check or local script that runs the warning-as-error Sphinx build;
 - optional `sphinx-apidoc` or `autosummary_generate` support once the package
   layout is formalized.
+- an optional generated API reference diff check for release branches;
+- a package layout so modules can be imported through a stable `durex.*`
+  namespace instead of top-level module names.

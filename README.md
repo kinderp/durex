@@ -117,6 +117,14 @@ Check Codex:
 codex --help
 ```
 
+Install development documentation dependencies when you need to build the API
+reference:
+
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements-dev.txt
+```
+
 ## Repository layout
 
 ```text
@@ -128,6 +136,7 @@ codex --help
 ├── telegram_control.py         # Telegram remote-control command router
 ├── pty_runner.py               # PTY runner and approval pipeline
 ├── config.example.yaml         # Planned v0.2 configuration shape
+├── requirements-dev.txt        # Development documentation dependencies
 ├── tests/
 │   ├── test_approval_detector.py
 │   ├── test_codex_queue.py
@@ -509,6 +518,27 @@ Check that the user guide mentions every current CLI command and long option:
 ```bash
 python3 scripts/check_cli_docs.py
 ```
+
+## API documentation
+
+The Python API reference is generated from module, class, function, and method
+docstrings with Sphinx.
+
+Install the development dependencies:
+
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements-dev.txt
+```
+
+Generate strict HTML documentation:
+
+```bash
+.venv/bin/python scripts/build_api_docs.py
+```
+
+The generated site is written to `docs/_build/html/`. More details:
+[`docs/SPHINX_API_DOCUMENTATION.md`](docs/SPHINX_API_DOCUMENTATION.md).
 
 Manual demos:
 
