@@ -310,7 +310,9 @@ For Python API documentation:
 - when changing existing code docstrings, rebuild the Sphinx API documentation
   and fix warnings before committing;
 - when adding new Python modules that belong in the public API reference, add
-  them to the Sphinx source files under `docs/sphinx/`.
+  them to the Sphinx source files under `docs/sphinx/`;
+- remember that Sphinx currently documents only modules explicitly registered in
+  `docs/sphinx/api.rst` or `docs/sphinx/maintenance.rst`.
 
 ---
 

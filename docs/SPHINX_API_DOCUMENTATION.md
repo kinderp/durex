@@ -135,13 +135,40 @@ Use the strict default command for normal validation:
 Use `--fresh-env` after changing docstrings or Sphinx source files when you want
 Sphinx to discard its cached environment and reread every module from scratch.
 
+## Manual module registration
+
+The current Sphinx setup does not automatically discover every new Python file.
+The generated API reference includes only modules explicitly listed in the
+Sphinx source files.
+
+When adding a new runtime module, add an `automodule` entry to
+`docs/sphinx/api.rst`. When adding a repository maintenance script, add it to
+`docs/sphinx/maintenance.rst`.
+
+For example, a new `config_loader.py` runtime module should be registered like
+this:
+
+```rst
+config_loader
+-------------
+
+.. automodule:: config_loader
+   :members:
+   :undoc-members:
+   :show-inheritance:
+```
+
+If this step is missed, the module can have correct docstrings and the Sphinx
+build can still pass, but the module will not appear in the generated HTML API
+reference.
+
 ## Future automation
 
 A future commit can make API documentation stricter and more automated by
 adding:
 
-- optional `sphinx-apidoc` or `autosummary_generate` support once the package
-  layout is formalized;
+- optional `sphinx-apidoc` or `autosummary_generate` support to reduce manual
+  module-registration risk once the package layout is formalized;
 - an optional generated API reference diff check for release branches;
 - a package layout so modules can be imported through a stable `durex.*`
   namespace instead of top-level module names.
