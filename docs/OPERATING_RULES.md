@@ -30,6 +30,46 @@ or overwrite changes that were not part of the current task.
 
 ---
 
+## Agent reasoning principles
+
+These rules apply when an AI agent helps modify, review, or document Durex.
+They are adapted from the Alfred operating rules and adjusted to Durex's
+documentation-heavy, local-automation workflow.
+
+- Think before editing. For non-trivial steps, state assumptions, doubts, and
+  trade-offs before changing code or documentation.
+- Do not hide uncertainty. If a request has multiple plausible interpretations,
+  stop and describe the interpretations instead of silently choosing one.
+- Prefer simplicity. Implement the minimum needed for the agreed step, without
+  speculative abstractions or unrequested configuration options.
+- Make surgical changes. Touch only the files required by the current task. If
+  unrelated dead code or cleanup opportunities are found, mention them or record
+  them as follow-up work instead of changing them without agreement.
+- Every changed line should be traceable to the current request, a test, a bug,
+  or a necessary documentation update.
+- Keep goals verifiable. For every technical step, identify how the result will
+  be checked, such as with `git diff --check`, unit tests, `py_compile`,
+  `scripts/check_cli_docs.py`, or a targeted manual verification.
+- Before refactoring, separate these concerns explicitly:
+  - observable behavior;
+  - module responsibilities;
+  - internal cleanup;
+  - historical compatibility that remains only in documentation.
+- If a change only reduces internal complexity, document why it does not change
+  observable behavior.
+- If an explanation given in chat describes a real code or architecture
+  decision, copy that explanation into Markdown docs or code comments when it
+  would help future readers.
+- When useful, cite the commit that introduced or explains a decision so future
+  readers can trace the concrete change.
+
+These principles should not slow down obvious fixes or purely mechanical
+documentation updates. They matter most for non-trivial work: refactors,
+approval semantics, runner behavior, tests, architecture, public interfaces,
+Telegram behavior, and developer tooling.
+
+---
+
 ## Branch rules
 
 Use a dedicated branch for each coherent area of work.
@@ -62,7 +102,51 @@ Stay on the current branch when:
 
 ## Commit rules
 
-Commits should be in English.
+Commits must follow these rules:
+
+- write the subject in English;
+- write the body in English;
+- include a detailed explanation of what changed and why;
+- include a final `Modified files:` list;
+- do not put blank lines between file-list items;
+- include only files related to the current step;
+- do not commit local untracked files, generated logs, cache files, or
+  out-of-scope experiments.
+
+Commit style should follow common Git commit best practices:
+
+- make clean, single-scope commits;
+- commit regularly on feature branches instead of waiting for one large change;
+- write meaningful messages for reviewers and future readers;
+- use imperative present tense in the subject: `add`, not `added` or `adds`;
+- use the body to explain what changed and why;
+- keep the subject short, ideally around 50 characters;
+- wrap the body around 72 characters when practical;
+- leave a blank line between subject and body;
+- do not end the subject with a period;
+- remove unnecessary punctuation.
+
+When useful, use this subject format:
+
+```text
+<type>(<optional scope>): <subject>
+```
+
+Allowed types:
+
+- `feat`: user-facing feature;
+- `fix`: user-facing bug fix;
+- `docs`: documentation changes;
+- `style`: formatting without behavior changes;
+- `refactor`: production-code refactor;
+- `test`: test addition or test refactor;
+- `chore`: routine maintenance without behavior changes;
+- `build`: build, tooling, or dependency changes;
+- `perf`: performance improvement.
+
+The `<type>` prefix is recommended but not mandatory when the branch already
+uses the historical commit style. English text, detailed body, and the final
+file list remain mandatory.
 
 Use a short subject plus a detailed body with these sections:
 
@@ -85,8 +169,29 @@ Validation:
 
 Only include `Added files` when files were added.
 
-Commit only the files related to the current task. Do not include generated
-cache files, unrelated local changes, or accidental artifacts.
+Example:
+
+```text
+docs: add CLI documentation drift check
+
+Summary:
+Add a lightweight check that compares the argparse CLI surface with the user
+guide so new flags do not silently go undocumented.
+
+What changed:
+- Added scripts/check_cli_docs.py.
+- Documented the check and future generated-reference roadmap.
+
+Added files:
+- scripts/check_cli_docs.py
+- docs/CLI_DOC_AUTOMATION.md
+Modified files:
+- README.md
+- docs/USER_GUIDE.md
+Validation:
+- Ran python3 scripts/check_cli_docs.py.
+- Ran git diff --check.
+```
 
 Before committing:
 
