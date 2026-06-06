@@ -93,6 +93,7 @@ More diagrams are available in:
 - [`docs/TELEGRAM_REMOTE_CONTROL.md`](docs/TELEGRAM_REMOTE_CONTROL.md)
 - [`docs/SESSION_APPROVAL_DEDUP.md`](docs/SESSION_APPROVAL_DEDUP.md)
 - [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md)
+- [`docs/SPHINX_API_DOCUMENTATION.md`](docs/SPHINX_API_DOCUMENTATION.md)
 - [`docs/ROADMAP.md`](docs/ROADMAP.md)
 
 ## Requirements
@@ -140,6 +141,7 @@ codex --help
     ├── ROADMAP.md
     ├── SESSION_APPROVAL_DEDUP.md
     ├── SEQUENCE_DIAGRAMS.md
+    ├── SPHINX_API_DOCUMENTATION.md
     ├── TELEGRAM_REMOTE_CONTROL.md
     └── TELEGRAM_APPROVALS.md
 ```
@@ -578,6 +580,7 @@ Then add one task per folder. This keeps Codex isolated and avoids mixing files 
 | [`docs/TELEGRAM_REMOTE_CONTROL.md`](docs/TELEGRAM_REMOTE_CONTROL.md) | Telegram queue remote-control mode |
 | [`docs/SESSION_APPROVAL_DEDUP.md`](docs/SESSION_APPROVAL_DEDUP.md) | Session id and approval deduplication fix |
 | [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) | Planned configuration model |
+| [`docs/SPHINX_API_DOCUMENTATION.md`](docs/SPHINX_API_DOCUMENTATION.md) | Sphinx API documentation contract and generation roadmap |
 | [`docs/ROADMAP.md`](docs/ROADMAP.md) | Version roadmap |
 
 ## Roadmap

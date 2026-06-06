@@ -49,6 +49,14 @@ class PolicyAction(str, Enum):
 
     The values are strings so they are easy to serialize in logs, audit records
     and future JSON APIs.
+
+    Values:
+        AUTO_ALLOW:
+            The command may be approved locally without user interaction.
+        ASK_TELEGRAM:
+            The command requires a human decision through Telegram.
+        AUTO_DENY:
+            The command should be denied locally without user interaction.
     """
 
     AUTO_ALLOW = "auto_allow"
@@ -107,6 +115,13 @@ class PolicyRule:
 
         Matching is case-sensitive by default because shell commands are usually
         case-sensitive. Whitespace is normalized to reduce accidental mismatch.
+
+        Args:
+            command:
+                Shell command extracted from an approval prompt.
+
+        Returns:
+            True when the normalized command satisfies this rule's glob pattern.
         """
 
         normalized_command = normalize_command(command)
@@ -187,6 +202,14 @@ def normalize_command(command: str) -> str:
     This is intentionally simple. It does not try to parse and rewrite shell
     syntax. It only trims leading/trailing whitespace and collapses repeated
     whitespace between tokens.
+
+    Args:
+        command:
+            Shell command text as extracted from terminal output or config.
+
+    Returns:
+        Command text with normalized whitespace. Quoting and token boundaries
+        are not interpreted here.
     """
 
     return re.sub(r"\s+", " ", command.strip())
@@ -198,6 +221,14 @@ def first_token(command: str) -> Optional[str]:
 
     This helper is not currently used for final decisions, but it is useful for
     debugging, logging and future rule engines.
+
+    Args:
+        command:
+            Shell command text.
+
+    Returns:
+        The first parsed shell token, or None when the command cannot be parsed
+        or contains no tokens.
     """
 
     try:
@@ -211,6 +242,17 @@ def first_token(command: str) -> Optional[str]:
 def build_rules(patterns: Iterable[str], action: PolicyAction, description: str = "") -> list[PolicyRule]:
     """
     Convert a list of patterns into PolicyRule objects.
+
+    Args:
+        patterns:
+            Glob-style command patterns.
+        action:
+            Policy action assigned to every generated rule.
+        description:
+            Human-facing reason reused when a generated rule matches.
+
+    Returns:
+        A list of immutable PolicyRule instances.
     """
 
     return [PolicyRule(pattern=pattern, action=action, description=description) for pattern in patterns]
@@ -222,6 +264,10 @@ def default_policy() -> ApprovalPolicy:
 
     The defaults are deliberately small. Real users should customize the policy
     in config.yaml once configuration loading is implemented.
+
+    Returns:
+        ApprovalPolicy with safe local validations auto-allowed, state-changing
+        commands escalated to Telegram, and elevated-privilege commands denied.
     """
 
     return ApprovalPolicy(
@@ -278,6 +324,17 @@ def action_from_string(value: str) -> PolicyAction:
         auto_allow
         deny
         auto_deny
+
+    Args:
+        value:
+            User-facing action string from configuration.
+
+    Returns:
+        The normalized PolicyAction.
+
+    Raises:
+        ValueError:
+            Raised when the string does not map to a known action.
     """
 
     normalized = value.strip().lower().replace("-", "_")
@@ -313,6 +370,18 @@ def policy_from_dict(data: dict) -> ApprovalPolicy:
           "ask_telegram": ["git push*"],
           "auto_deny": ["sudo*"]
         }
+
+    Args:
+        data:
+            Plain configuration dictionary, typically decoded from a future
+            YAML/JSON/TOML loader.
+
+    Returns:
+        ApprovalPolicy built from configured pattern groups.
+
+    Raises:
+        ValueError:
+            Propagated when ``default_decision`` uses an unknown action string.
     """
 
     default_action = action_from_string(data.get("default_decision", "ask"))
@@ -343,6 +412,9 @@ def _demo() -> None:
 
     Run:
         python3 approval_policy.py
+
+    Returns:
+        None. The function prints sample policy decisions to stdout.
     """
 
     policy = default_policy()

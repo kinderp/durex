@@ -115,6 +115,14 @@ def normalize_text(text: str) -> str:
 
     This function is intentionally not used for display because it removes
     line structure. It is only used where stable matching matters.
+
+    Args:
+        text:
+            Raw or already-cleaned terminal text.
+
+    Returns:
+        Text with terminal controls removed and whitespace collapsed to a
+        single-space representation suitable for equality checks and hashes.
     """
 
     return WHITESPACE_RE.sub(" ", strip_ansi(text)).strip()
@@ -126,6 +134,16 @@ def tail_lines(text: str, max_lines: int = 40) -> str:
 
     Approval prompts are normally near the end of the buffer. Looking only at
     the tail reduces noise and keeps Telegram messages compact.
+
+    Args:
+        text:
+            Rolling PTY output buffer.
+        max_lines:
+            Maximum number of final visible lines to keep.
+
+    Returns:
+        The visible tail of the terminal buffer, with ANSI/control characters
+        normalized before line splitting.
     """
 
     lines = strip_ansi(text).splitlines()
@@ -139,6 +157,13 @@ def redact_for_display(text: Optional[str]) -> Optional[str]:
     This is not a full data-loss-prevention system. It only handles common
     patterns such as token=..., password=..., api_key=... and bearer headers.
     The goal is to avoid accidentally forwarding obvious secrets to a chat.
+
+    Args:
+        text:
+            Optional text that may be shown outside the local terminal.
+
+    Returns:
+        Redacted text, or None when the input was None.
     """
 
     if text is None:
@@ -165,6 +190,13 @@ def looks_like_approval_prompt(text: str) -> bool:
     common confirmation wording. The list is intentionally broad enough to
     catch typical CLI prompts but not so broad that every question becomes an
     approval request.
+
+    Args:
+        text:
+            Rolling PTY output buffer.
+
+    Returns:
+        True when the tail matches one of the approval prompt patterns.
     """
 
     recent = tail_lines(text, 50).lower()
@@ -195,6 +227,15 @@ def prompt_signature(command: Optional[str], context: str) -> str:
     whole tail makes the same prompt look like different requests. We instead
     use the extracted command plus the last line that looks like the actual
     confirmation prompt.
+
+    Args:
+        command:
+            Extracted shell command, when available.
+        context:
+            Recent terminal context around the prompt.
+
+    Returns:
+        A normalized signature string used as the input to request-id hashing.
     """
 
     prompt_patterns = [
@@ -242,6 +283,15 @@ def extract_command(text: str) -> Optional[str]:
     4. lines beginning with common developer-tool commands.
 
     Returns None when no command can be extracted confidently.
+
+    Args:
+        text:
+            Recent terminal output around a potential approval prompt.
+
+    Returns:
+        Redacted command text when a reliable heuristic matches, otherwise
+        None. None is an intentional signal: the policy should ask the human
+        instead of pretending the command is known.
     """
 
     recent = tail_lines(text, 60)
@@ -291,6 +341,17 @@ def make_request_id(command: Optional[str], context: str) -> str:
 
     Terminal prompts may be redrawn multiple times. The PTY runner can store the
     last request_id values it sent and avoid duplicate Telegram notifications.
+
+    Args:
+        command:
+            Extracted command, or None for generic approval prompts.
+        context:
+            Recent terminal context used to distinguish otherwise-generic
+            prompts.
+
+    Returns:
+        A short SHA-256 based fingerprint. It is stable within the prompt
+        contract but not intended as a security token.
     """
 
     base = prompt_signature(command, context)
@@ -332,6 +393,9 @@ def _demo() -> None:
     detector locally:
 
         python3 approval_detector.py
+
+    Returns:
+        None. The function prints the demonstration result to stdout.
     """
 
     sample = """

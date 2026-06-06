@@ -58,19 +58,41 @@ STATUSES = {
 
 
 def utc_now() -> dt.datetime:
-    """Return the current UTC datetime."""
+    """
+    Return the current UTC datetime.
+
+    Returns:
+        Timezone-aware datetime in UTC. Queue timestamps are stored in UTC so
+        retry checks do not depend on the operator's local timezone.
+    """
 
     return dt.datetime.now(dt.timezone.utc)
 
 
 def iso_now() -> str:
-    """Return the current UTC time as an ISO-8601 string."""
+    """
+    Return the current UTC time as an ISO-8601 string.
+
+    Returns:
+        ISO-8601 timestamp used by SQLite task rows.
+    """
 
     return utc_now().isoformat()
 
 
 def parse_datetime(value: Optional[str]) -> Optional[dt.datetime]:
-    """Parse an ISO datetime string, accepting the common trailing Z syntax."""
+    """
+    Parse an ISO datetime string, accepting the common trailing Z syntax.
+
+    Args:
+        value:
+            Optional timestamp found in Codex output or database state.
+
+    Returns:
+        Parsed datetime when the value is valid, otherwise None. Invalid reset
+        values are ignored so the queue can fall back to a conservative retry
+        delay.
+    """
 
     if not value:
         return None
@@ -82,7 +104,13 @@ def parse_datetime(value: Optional[str]) -> Optional[dt.datetime]:
 
 
 def connect() -> sqlite3.Connection:
-    """Open the local SQLite database."""
+    """
+    Open the local SQLite database.
+
+    Returns:
+        sqlite3 connection to the configured DB_PATH. Callers own transaction
+        scope through context managers.
+    """
 
     return sqlite3.connect(DB_PATH)
 
@@ -120,7 +148,24 @@ def init_db() -> None:
 
 
 def add_task(title: str, prompt: str, workdir: str = ".", priority: int = 100, max_attempts: int = 3) -> None:
-    """Add one task to the persistent queue."""
+    """
+    Add one task to the persistent queue.
+
+    Args:
+        title:
+            Human-readable task title.
+        prompt:
+            Prompt passed to ``codex exec`` when the task starts.
+        workdir:
+            Working directory used by the Codex process.
+        priority:
+            Lower values run earlier.
+        max_attempts:
+            Maximum non-limit failures before the task becomes FAILED.
+
+    Returns:
+        None. The function persists the task in SQLite.
+    """
 
     workdir = str(Path(workdir).resolve())
 
@@ -138,7 +183,12 @@ def add_task(title: str, prompt: str, workdir: str = ".", priority: int = 100, m
 
 
 def list_tasks() -> None:
-    """Print a human-readable task list."""
+    """
+    Print a human-readable task list.
+
+    Returns:
+        None. This is a CLI presentation helper and writes to stdout.
+    """
 
     with connect() as con:
         rows = con.execute(
@@ -177,6 +227,10 @@ def get_next_task() -> Optional[sqlite3.Row]:
     Runnable means:
     - PENDING, or
     - WAITING_LIMIT with reset_at already passed.
+
+    Returns:
+        sqlite3.Row for the next runnable task, or None when the worker should
+        sleep or exit.
     """
 
     now = iso_now()
@@ -201,7 +255,19 @@ def get_next_task() -> Optional[sqlite3.Row]:
 
 
 def update_task(task_id: int, **fields: object) -> None:
-    """Update one or more columns for a task."""
+    """
+    Update one or more columns for a task.
+
+    Args:
+        task_id:
+            Primary key of the task to update.
+        **fields:
+            Column names and replacement values. ``updated_at`` is always
+            refreshed by this function.
+
+    Returns:
+        None. Empty updates are ignored.
+    """
 
     if not fields:
         return
@@ -220,6 +286,13 @@ def extract_session_id(text: str) -> Optional[str]:
     Try to extract a Codex session id from command output.
 
     This remains heuristic because CLI output can change over time.
+
+    Args:
+        text:
+            Captured Codex stdout/stderr or PTY output.
+
+    Returns:
+        Latest session id candidate, or None when no known pattern matches.
     """
 
     patterns = [
@@ -241,7 +314,16 @@ def extract_session_id(text: str) -> Optional[str]:
 
 
 def extract_reset_at(text: str) -> Optional[str]:
-    """Try to extract usage-limit reset time from Codex output."""
+    """
+    Try to extract usage-limit reset time from Codex output.
+
+    Args:
+        text:
+            Captured Codex output that may contain quota reset hints.
+
+    Returns:
+        ISO timestamp when a valid reset marker is found, otherwise None.
+    """
 
     patterns = [
         r"resets_at[\"']?\s*[:=]\s*[\"']([^\"']+)[\"']",
@@ -261,7 +343,16 @@ def extract_reset_at(text: str) -> Optional[str]:
 
 
 def looks_like_usage_limit(text: str) -> bool:
-    """Detect common usage-limit or quota errors in output text."""
+    """
+    Detect common usage-limit or quota errors in output text.
+
+    Args:
+        text:
+            Captured command output.
+
+    Returns:
+        True when common quota/rate-limit markers are present.
+    """
 
     markers = [
         "usage limit",
@@ -281,6 +372,13 @@ def build_codex_command(task: sqlite3.Row) -> list[str]:
 
     If a session_id exists, use Codex resume. Otherwise start from the original
     prompt.
+
+    Args:
+        task:
+            SQLite task row.
+
+    Returns:
+        Command argument vector for subprocess or PTY execution.
     """
 
     if task["session_id"]:
@@ -291,7 +389,16 @@ def build_codex_command(task: sqlite3.Row) -> list[str]:
 
 
 def task_to_dict(task: sqlite3.Row) -> dict:
-    """Convert sqlite3.Row into a plain dict for modules that do not know SQLite."""
+    """
+    Convert sqlite3.Row into a plain dict for modules that do not know SQLite.
+
+    Args:
+        task:
+            SQLite row returned by the queue layer.
+
+    Returns:
+        Plain dictionary preserving all row keys.
+    """
 
     return {key: task[key] for key in task.keys()}
 
@@ -301,6 +408,17 @@ def finish_task_from_output(task: sqlite3.Row, output: str, returncode: int) -> 
     Convert runner output into final queue state.
 
     This function is shared by subprocess mode and PTY mode.
+
+    Args:
+        task:
+            Task row captured before the run started.
+        output:
+            Complete command output captured by the selected runner.
+        returncode:
+            Process exit status from subprocess or PTY mode.
+
+    Returns:
+        None. The function updates SQLite and prints the state transition.
     """
 
     task_id = int(task["id"])
@@ -359,7 +477,16 @@ def finish_task_from_output(task: sqlite3.Row, output: str, returncode: int) -> 
 
 
 def run_codex_subprocess(task: sqlite3.Row) -> None:
-    """Run one task using classic subprocess.run()."""
+    """
+    Run one task using classic subprocess.run().
+
+    Args:
+        task:
+            Runnable queue task.
+
+    Returns:
+        None. The task row is updated based on process output.
+    """
 
     task_id = int(task["id"])
     cmd = build_codex_command(task)
@@ -392,6 +519,20 @@ def build_telegram_bridge(enabled: bool, verbosity: str) -> Optional[TelegramApp
 
     If Telegram is enabled but environment variables are missing, the runner
     raises a clear error instead of silently running without approvals.
+
+    Args:
+        enabled:
+            Whether PTY approvals should use Telegram.
+        verbosity:
+            Telegram approval message verbosity.
+
+    Returns:
+        TelegramApprovalBridge when enabled, otherwise None.
+
+    Raises:
+        TelegramBridgeError:
+            Raised by ``from_env`` when required environment variables are
+            missing or invalid.
     """
 
     if not enabled:
@@ -401,7 +542,27 @@ def build_telegram_bridge(enabled: bool, verbosity: str) -> Optional[TelegramApp
 
 
 def telegram_check(discover_chat_id: bool, send_test: bool, message: str, poll_timeout: int) -> None:
-    """Validate Telegram Bot API connectivity and optional chat routing."""
+    """
+    Validate Telegram Bot API connectivity and optional chat routing.
+
+    Args:
+        discover_chat_id:
+            Whether to poll recent updates and print discovered chat ids.
+        send_test:
+            Whether to send a configured test message.
+        message:
+            Message body for the test send.
+        poll_timeout:
+            Long-poll timeout used while discovering chat ids.
+
+    Returns:
+        None. Results are printed to stdout.
+
+    Raises:
+        TelegramBridgeError:
+            Raised when environment variables are missing or Telegram rejects
+            the request.
+    """
 
     token = os.environ.get("DUREX_TELEGRAM_BOT_TOKEN")
     chat_id = os.environ.get("DUREX_TELEGRAM_CHAT_ID")
@@ -443,7 +604,22 @@ def telegram_check(discover_chat_id: bool, send_test: bool, message: str, poll_t
 
 
 def run_codex_pty(task: sqlite3.Row, telegram_enabled: bool, telegram_verbosity: str, echo_output: bool) -> None:
-    """Run one task using the PTY approval bridge."""
+    """
+    Run one task using the PTY approval bridge.
+
+    Args:
+        task:
+            Runnable queue task.
+        telegram_enabled:
+            Whether policy escalation may ask Telegram.
+        telegram_verbosity:
+            Message detail level for Telegram approvals.
+        echo_output:
+            Whether PTY output should be mirrored locally.
+
+    Returns:
+        None. The task row is updated based on PTY result.
+    """
 
     task_id = int(task["id"])
     cmd = build_codex_command(task)
@@ -476,7 +652,25 @@ def run_codex_pty(task: sqlite3.Row, telegram_enabled: bool, telegram_verbosity:
 
 
 def run_task(task: sqlite3.Row, runner_mode: str, telegram_enabled: bool, telegram_verbosity: str, echo_output: bool) -> None:
-    """Dispatch a task to the selected runner implementation."""
+    """
+    Dispatch a task to the selected runner implementation.
+
+    Args:
+        task:
+            Runnable queue task.
+        runner_mode:
+            ``subprocess`` for non-interactive execution or ``pty`` for
+            interactive approval handling.
+        telegram_enabled:
+            Whether PTY escalation may use Telegram.
+        telegram_verbosity:
+            Telegram approval verbosity.
+        echo_output:
+            Whether PTY output is mirrored to stdout.
+
+    Returns:
+        None.
+    """
 
     if runner_mode == "pty":
         run_codex_pty(
@@ -498,7 +692,27 @@ def worker_loop(
     telegram_verbosity: str = "normal",
     echo_output: bool = True,
 ) -> None:
-    """Main worker loop."""
+    """
+    Main worker loop.
+
+    Args:
+        check_interval:
+            Sleep interval when no runnable task exists.
+        stop_when_empty:
+            Exit instead of sleeping when the queue is empty.
+        runner_mode:
+            Selected execution backend.
+        telegram_enabled:
+            Whether PTY approvals may call Telegram.
+        telegram_verbosity:
+            Telegram approval message verbosity.
+        echo_output:
+            Whether PTY output is printed locally.
+
+    Returns:
+        None. The loop returns only when ``stop_when_empty`` is true and no task
+        is runnable.
+    """
 
     init_db()
 
@@ -524,7 +738,16 @@ def worker_loop(
 
 
 def seed_example_tasks(workdir: str = ".") -> None:
-    """Insert example tasks useful for quick testing."""
+    """
+    Insert example tasks useful for quick testing.
+
+    Args:
+        workdir:
+            Working directory assigned to every seeded task.
+
+    Returns:
+        None. The function persists example queue rows.
+    """
 
     add_task(
         title="Grade student A assignment",
@@ -582,7 +805,13 @@ Create a report_final.md file with:
 
 
 def main() -> None:
-    """Command-line interface."""
+    """
+    Command-line interface.
+
+    Returns:
+        None. Argparse dispatches subcommands and this function writes
+        user-facing results to stdout.
+    """
 
     parser = argparse.ArgumentParser(
         description="Durex: persistent Codex CLI task queue with optional PTY/Telegram approvals."

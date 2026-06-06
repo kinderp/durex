@@ -25,14 +25,35 @@ IGNORED_OPTIONS = {"--help"}
 
 @dataclass(frozen=True)
 class CommandHelp:
-    """One argparse help page and the long options discovered in it."""
+    """
+    One argparse help page and the long options discovered in it.
+
+    Attributes:
+        command:
+            Top-level codex_queue.py subcommand.
+        options:
+            Long options discovered in that command's help output.
+    """
 
     command: str
     options: set[str]
 
 
 def run_help(*args: str) -> str:
-    """Return argparse help output for codex_queue.py."""
+    """
+    Return argparse help output for codex_queue.py.
+
+    Args:
+        *args:
+            Optional subcommand path placed before ``--help``.
+
+    Returns:
+        stdout emitted by argparse.
+
+    Raises:
+        subprocess.CalledProcessError:
+            Raised when the CLI help command exits with a non-zero status.
+    """
 
     completed = subprocess.run(
         [sys.executable, str(CLI), *args, "--help"],
@@ -45,7 +66,21 @@ def run_help(*args: str) -> str:
 
 
 def discover_commands(root_help: str) -> list[str]:
-    """Extract top-level subcommands from argparse's `{a,b,c}` usage block."""
+    """
+    Extract top-level subcommands from argparse's ``{a,b,c}`` usage block.
+
+    Args:
+        root_help:
+            Root ``codex_queue.py --help`` output.
+
+    Returns:
+        Ordered list of top-level subcommand names.
+
+    Raises:
+        RuntimeError:
+            Raised when argparse output no longer contains the expected usage
+            block.
+    """
 
     match = re.search(r"\{([^}]+)\}", root_help)
     if not match:
@@ -54,7 +89,17 @@ def discover_commands(root_help: str) -> list[str]:
 
 
 def discover_options(help_output: str) -> set[str]:
-    """Extract long options from an argparse help page."""
+    """
+    Extract long options from an argparse help page.
+
+    Args:
+        help_output:
+            Help text for one command.
+
+    Returns:
+        Set of long option names, excluding globally ignored options such as
+        ``--help``.
+    """
 
     definition_lines = [
         line.lstrip()
@@ -71,7 +116,13 @@ def discover_options(help_output: str) -> set[str]:
 
 
 def load_cli_surface() -> tuple[list[str], list[CommandHelp]]:
-    """Return top-level commands and per-command options from argparse."""
+    """
+    Return top-level commands and per-command options from argparse.
+
+    Returns:
+        Tuple containing command names and structured help metadata for every
+        command.
+    """
 
     root_help = run_help()
     commands = discover_commands(root_help)
@@ -83,7 +134,20 @@ def load_cli_surface() -> tuple[list[str], list[CommandHelp]]:
 
 
 def missing_mentions(guide_text: str, commands: list[str], command_help: list[CommandHelp]) -> list[str]:
-    """Return missing command and option mentions in the guide."""
+    """
+    Return missing command and option mentions in the guide.
+
+    Args:
+        guide_text:
+            Current user guide text.
+        commands:
+            Top-level CLI commands discovered from argparse.
+        command_help:
+            Per-command option metadata.
+
+    Returns:
+        Human-readable list of missing command/option mentions.
+    """
 
     missing: list[str] = []
 
@@ -100,7 +164,13 @@ def missing_mentions(guide_text: str, commands: list[str], command_help: list[Co
 
 
 def main() -> int:
-    """Run the documentation drift check."""
+    """
+    Run the documentation drift check.
+
+    Returns:
+        Process exit code: 0 when docs mention the CLI surface, 1 when drift is
+        detected.
+    """
 
     guide_text = GUIDE.read_text()
     commands, command_help = load_cli_surface()

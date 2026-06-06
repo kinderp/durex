@@ -14,7 +14,11 @@ from pty_runner import PtyRunnerConfig, run_pty_command
 
 
 class PtyRunnerApprovalTests(unittest.TestCase):
+    """Regression coverage for the PTY approval loop contract."""
+
     def test_single_prompt_is_handled_once(self):
+        """One terminal prompt should create one audit event and one answer."""
+
         script = (
             "answer=input('Command: pytest -q\\nApprove this command? [y/N] '); "
             "print('approval result=' + answer)"

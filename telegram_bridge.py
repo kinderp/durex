@@ -47,6 +47,18 @@ from urllib import parse, request, error
 class TelegramDecisionAction(str, Enum):
     """
     Normalized user actions returned by Telegram callbacks.
+
+    Values:
+        APPROVE:
+            Allow the PTY runner to answer the prompt positively.
+        DENY:
+            Ask the PTY runner to answer the prompt negatively.
+        SHOW_CONTEXT:
+            Send more terminal context without completing the approval.
+        STOP:
+            Ask the PTY runner to terminate the current task.
+        TIMEOUT:
+            Internal timeout outcome when no callback arrives.
     """
 
     APPROVE = "approve"
@@ -64,6 +76,26 @@ class TelegramApprovalRequest:
     This object is intentionally close to the ApprovalRequest produced by
     approval_detector.py, but it also includes task metadata useful for the
     message shown on the phone.
+
+    Attributes:
+        request_id:
+            Detector fingerprint used to correlate callbacks.
+        task_id:
+            Queue task id, if the request came from codex_queue.py.
+        task_title:
+            Human-readable task title.
+        workdir:
+            Working directory of the task that triggered the prompt.
+        command:
+            Extracted command, or None when the detector could not identify it.
+        reason:
+            Policy/detector explanation shown to the user.
+        context:
+            Redacted terminal context around the approval prompt.
+        verbosity:
+            Message detail level requested for this approval.
+        created_at:
+            Local Unix timestamp for message construction.
     """
 
     request_id: str
@@ -81,6 +113,21 @@ class TelegramApprovalRequest:
 class TelegramApprovalDecision:
     """
     Decision returned by TelegramApprovalBridge.wait_for_decision().
+
+    Attributes:
+        request_id:
+            Approval request id that this decision answers.
+        action:
+            Normalized callback action.
+        source:
+            Decision origin, usually ``telegram`` or ``timeout``.
+        telegram_user_id:
+            Telegram user id that pressed the button, when available.
+        telegram_message_id:
+            Telegram message id that contained the inline keyboard, when
+            available.
+        decided_at:
+            Local Unix timestamp for audit/event consumers.
     """
 
     request_id: str
@@ -135,6 +182,14 @@ def extract_chat_ids_from_updates(updates: list[dict[str, Any]]) -> list[int]:
 
     Telegram returns different update shapes for normal messages and inline
     callbacks. Durex accepts both depending on the feature being used.
+
+    Args:
+        updates:
+            Raw Telegram getUpdates result list.
+
+    Returns:
+        Unique chat ids in first-seen order. Invalid or missing chat ids are
+        ignored because discovery is an operator aid, not a security decision.
     """
 
     chat_ids: list[int] = []
@@ -174,6 +229,18 @@ class TelegramApprovalBridge:
     """
 
     def __init__(self, config: TelegramBridgeConfig) -> None:
+        """
+        Initialize a Telegram approval bridge.
+
+        Args:
+            config:
+                Runtime Telegram configuration. The bot token and allowed chat
+                id define the transport and authorization boundary.
+
+        Returns:
+            None.
+        """
+
         self.config = config
         self._last_update_id: Optional[int] = None
 
@@ -190,6 +257,25 @@ class TelegramApprovalBridge:
         Build a bridge from environment variables.
 
         This keeps secrets out of config files and source code.
+
+        Args:
+            bot_token_env:
+                Environment variable containing the bot token.
+            chat_id_env:
+                Environment variable containing the authorized chat id.
+            verbosity:
+                Default Telegram message verbosity.
+            approval_timeout_seconds:
+                Maximum wait time for approval callbacks.
+            timeout_default_decision:
+                Decision returned when the timeout expires.
+
+        Returns:
+            Configured TelegramApprovalBridge.
+
+        Raises:
+            TelegramBridgeError:
+                Raised when required environment values are missing or invalid.
         """
 
         token = os.environ.get(bot_token_env)
@@ -218,6 +304,13 @@ class TelegramApprovalBridge:
     def api_url(self, method: str) -> str:
         """
         Return the full Telegram API URL for one bot method.
+
+        Args:
+            method:
+                Telegram Bot API method name, for example ``sendMessage``.
+
+        Returns:
+            Fully qualified HTTPS API URL for this bot token.
         """
 
         return f"{self.config.api_base}/bot{self.config.bot_token}/{method}"
@@ -225,6 +318,20 @@ class TelegramApprovalBridge:
     def api_call(self, method: str, payload: dict[str, Any]) -> dict[str, Any]:
         """
         Call one Telegram Bot API method using JSON POST.
+
+        Args:
+            method:
+                Telegram Bot API method name.
+            payload:
+                JSON-serializable request payload.
+
+        Returns:
+            Decoded Telegram response dictionary.
+
+        Raises:
+            TelegramBridgeError:
+                Raised for transport failures, Telegram API errors or malformed
+                responses.
         """
 
         body = json.dumps(payload).encode("utf-8")
@@ -249,6 +356,13 @@ class TelegramApprovalBridge:
     def get_me(self) -> dict[str, Any]:
         """
         Return Telegram bot metadata.
+
+        Returns:
+            Telegram ``User`` object for the configured bot.
+
+        Raises:
+            TelegramBridgeError:
+                Raised when Telegram does not return a dictionary result.
         """
 
         data = self.api_call("getMe", {})
@@ -260,6 +374,14 @@ class TelegramApprovalBridge:
     def build_message_text(self, approval: TelegramApprovalRequest) -> str:
         """
         Build a Telegram message according to the selected verbosity.
+
+        Args:
+            approval:
+                Approval request to render for the human operator.
+
+        Returns:
+            Plain-text Telegram message. The returned text intentionally avoids
+            Markdown formatting so shell characters cannot break rendering.
         """
 
         verbosity = approval.verbosity or self.config.verbosity
@@ -302,6 +424,13 @@ class TelegramApprovalBridge:
 
         Callback data is intentionally compact because Telegram limits callback
         data length.
+
+        Args:
+            request_id:
+                Approval request fingerprint embedded into callback data.
+
+        Returns:
+            Telegram ``reply_markup`` payload with approval actions.
         """
 
         return {
@@ -320,6 +449,19 @@ class TelegramApprovalBridge:
     def send_message(self, text: str, reply_markup: Optional[dict[str, Any]] = None) -> int:
         """
         Send a message to the configured chat and return message_id.
+
+        Args:
+            text:
+                Message body.
+            reply_markup:
+                Optional Telegram inline keyboard payload.
+
+        Returns:
+            Telegram message id.
+
+        Raises:
+            TelegramBridgeError:
+                Raised when the Telegram API call fails.
         """
 
         payload: dict[str, Any] = {
@@ -335,6 +477,13 @@ class TelegramApprovalBridge:
     def send_approval_request(self, approval: TelegramApprovalRequest) -> int:
         """
         Send the approval request message with inline buttons.
+
+        Args:
+            approval:
+                Approval request rendered into text and inline buttons.
+
+        Returns:
+            Telegram message id for the sent approval prompt.
         """
 
         return self.send_message(
@@ -345,6 +494,13 @@ class TelegramApprovalBridge:
     def send_context(self, approval: TelegramApprovalRequest) -> None:
         """
         Send a longer context message when the user taps Show context.
+
+        Args:
+            approval:
+                Approval request whose context should be displayed.
+
+        Returns:
+            None.
         """
 
         text = (
@@ -358,6 +514,15 @@ class TelegramApprovalBridge:
     def answer_callback_query(self, callback_query_id: str, text: str = "") -> None:
         """
         Acknowledge a Telegram inline-button callback.
+
+        Args:
+            callback_query_id:
+                Telegram callback query id.
+            text:
+                Optional short acknowledgement shown by Telegram.
+
+        Returns:
+            None.
         """
 
         payload: dict[str, Any] = {"callback_query_id": callback_query_id}
@@ -372,6 +537,16 @@ class TelegramApprovalBridge:
         Long polling keeps the connection open for up to timeout seconds. The
         returned updates may include normal messages, callback queries and other
         Telegram events.
+
+        Args:
+            timeout:
+                Telegram long-poll timeout in seconds.
+            allowed_updates:
+                Optional Telegram update type filter.
+
+        Returns:
+            Raw update dictionaries. The bridge advances its offset after every
+            received update to avoid processing the same callback repeatedly.
         """
 
         payload: dict[str, Any] = {
@@ -395,6 +570,13 @@ class TelegramApprovalBridge:
     def discover_chat_ids(self, timeout: int = 0) -> list[int]:
         """
         Poll recent updates and return chat ids that can be used for config.
+
+        Args:
+            timeout:
+                Long-poll timeout used for discovery.
+
+        Returns:
+            Unique chat ids extracted from recent messages/callbacks.
         """
 
         return extract_chat_ids_from_updates(
@@ -409,6 +591,16 @@ class TelegramApprovalBridge:
         - come from the allowed chat id;
         - use callback_data format durex:request_id:action;
         - refer to the expected request id.
+
+        Args:
+            update:
+                Raw Telegram update dictionary.
+            expected_request_id:
+                Request id currently waiting for a decision.
+
+        Returns:
+            TelegramApprovalDecision when the update is a valid matching
+            callback, otherwise None.
         """
 
         callback = update.get("callback_query")
@@ -490,6 +682,9 @@ def _demo() -> None:
 
     Run:
         python3 telegram_bridge.py
+
+    Returns:
+        None. The demo sends a real Telegram request and prints the decision.
     """
 
     bridge = TelegramApprovalBridge.from_env(approval_timeout_seconds=120)
