@@ -411,6 +411,9 @@ python3 codex_queue.py telegram-check --send-test
 python3 codex_queue.py telegram-control --allowed-workdir /path/to/projects
 ```
 
+If you lose the bot token or chat id, follow the recovery checklist in
+[`docs/USER_GUIDE.md`](docs/USER_GUIDE.md#recovering-telegram-credentials).
+
 Example Telegram command:
 
 ```text
@@ -435,6 +438,8 @@ Codex terminal control is intentionally left for a future policy layer such as
 Alfred.
 
 More details: [`docs/TELEGRAM_REMOTE_CONTROL.md`](docs/TELEGRAM_REMOTE_CONTROL.md)
+
+First-use smoke test: [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md#first-remote-control-smoke-test)
 
 ## Approval policy
 

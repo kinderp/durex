@@ -304,6 +304,11 @@ export DUREX_TELEGRAM_BOT_TOKEN="your-bot-token"
 python3 codex_queue.py telegram-check
 ```
 
+If you already created a bot but lost the token, open `@BotFather`, send
+`/mybots`, select the bot, open `API Token`, then copy or regenerate the token.
+Telegram does not expose a lost token anywhere else. If you regenerate it, update
+`DUREX_TELEGRAM_BOT_TOKEN` before running Durex again.
+
 ### 3. Discover the chat id
 
 Send any message to your bot from the Telegram chat you want to authorize.
@@ -331,6 +336,13 @@ python3 codex_queue.py telegram-check --send-test
 
 If the message arrives in Telegram, approval routing is ready.
 
+If `--send-test` returns `HTTP Error 403: Forbidden`, the token is valid but the
+bot cannot write to the configured chat. Usually this means the chat id is wrong,
+the bot was not started in private chat, the bot was removed from a group, or
+the bot was blocked. Send `/start` or any message to the bot, rerun
+`telegram-check --discover-chat-id`, export the printed id, then retry
+`telegram-check --send-test`.
+
 ### 5. Run with Telegram approvals
 
 ```bash
@@ -347,6 +359,89 @@ When Codex asks for approval, Telegram buttons can:
 | Stop task | Terminates the current task process |
 
 Details: [TELEGRAM_APPROVALS.md](TELEGRAM_APPROVALS.md)
+
+---
+
+## Recovering Telegram credentials
+
+Use this section when setup worked before but you lost the token, changed the
+bot, changed chat, or forgot which chat id Durex should use.
+
+### Lost bot token
+
+Telegram bot tokens are managed by `@BotFather`.
+
+1. Open Telegram.
+2. Search for `@BotFather`.
+3. Send `/mybots`.
+4. Select your Durex bot.
+5. Open `API Token`.
+6. Copy the current token or regenerate it.
+
+Regenerating a token invalidates the old value immediately. Update the current
+shell:
+
+```bash
+export DUREX_TELEGRAM_BOT_TOKEN="new-token-from-botfather"
+python3 codex_queue.py telegram-check
+```
+
+If you cannot identify the old bot, create a new one:
+
+```text
+/newbot
+```
+
+Then export the new token and repeat chat-id discovery.
+
+### Lost chat id
+
+First make sure the bot can receive updates from the chat you want to authorize.
+
+For a private chat:
+
+1. Open the bot chat in Telegram.
+2. Send `/start`.
+3. Send any short message, for example `hello`.
+
+For a group:
+
+1. Add the bot to the group.
+2. Send `/start@YourBotUsername` or any normal message in the group.
+
+Then run:
+
+```bash
+unset DUREX_TELEGRAM_CHAT_ID
+python3 codex_queue.py telegram-check --discover-chat-id --poll-timeout 30
+```
+
+Copy the exact value printed by Durex:
+
+```bash
+export DUREX_TELEGRAM_CHAT_ID="the-printed-chat-id"
+python3 codex_queue.py telegram-check --send-test
+```
+
+Private chat ids are usually positive. Group and supergroup ids are often
+negative, frequently beginning with `-100`. Keep the minus sign.
+
+### Full credential reset checklist
+
+```bash
+export DUREX_TELEGRAM_BOT_TOKEN="token-from-botfather"
+python3 codex_queue.py telegram-check
+
+# Send /start or any message to the bot in Telegram before this step.
+unset DUREX_TELEGRAM_CHAT_ID
+python3 codex_queue.py telegram-check --discover-chat-id --poll-timeout 30
+
+export DUREX_TELEGRAM_CHAT_ID="the-printed-chat-id"
+python3 codex_queue.py telegram-check --send-test
+```
+
+Only continue to approvals or remote control after the test message arrives in
+Telegram.
 
 ---
 
@@ -433,6 +528,72 @@ Request a graceful stop:
 worker to stop before starting another task.
 
 Details: [TELEGRAM_REMOTE_CONTROL.md](TELEGRAM_REMOTE_CONTROL.md)
+
+### First remote-control smoke test
+
+Use this after `telegram-check --send-test` works.
+
+In one terminal, start the daemon with a directory Durex is allowed to use:
+
+```bash
+python3 codex_queue.py telegram-control --allowed-workdir /lab/durex
+```
+
+In Telegram, send these commands one by one:
+
+```text
+/status
+```
+
+Expected result: Durex replies with worker state and task counts.
+
+```text
+/tasks
+```
+
+Expected result: Durex lists recent tasks or says no tasks exist.
+
+Add a harmless task. Single-line form is easiest on mobile:
+
+```text
+/add --title "Smoke test" --workdir /lab/durex --priority 1 --prompt "Read the README and summarize in one short paragraph what Durex does. Do not edit files."
+```
+
+Expected result: `Task added: Smoke test`.
+
+Check the queue:
+
+```text
+/tasks
+```
+
+Start local Codex execution:
+
+```text
+/run
+```
+
+Watch the latest output:
+
+```text
+/tail
+```
+
+Show a specific task output if needed:
+
+```text
+/tail 1
+```
+
+Request a graceful stop before another task starts:
+
+```text
+/stop
+```
+
+`/run` starts Codex CLI on the local machine. If you only want to validate
+Telegram communication and queue control, stop after `/tasks`; you have already
+tested bot messaging, chat authorization, `/status`, and `/add`.
 
 ---
 
