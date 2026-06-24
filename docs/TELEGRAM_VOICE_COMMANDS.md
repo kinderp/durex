@@ -226,7 +226,12 @@ Durex only accepts languages listed in:
 export DUREX_VOICE_ALLOWED_LANGUAGES=it,en
 ```
 
-If automatic language detection is wrong, force a language:
+Automatic detection can be unreliable for very short voice messages such as
+`stato` or `status`. Durex accepts a recognized Durex voice command even when
+the detector reports a different language, but unrecognized transcripts from
+outside the allow list are still rejected.
+
+If automatic language detection is repeatedly wrong, force a language:
 
 ```bash
 export DUREX_VOICE_LANGUAGE=it

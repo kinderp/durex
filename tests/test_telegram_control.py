@@ -301,7 +301,7 @@ class TelegramControlTests(unittest.TestCase):
                 voice_enabled=True,
                 voice_allowed_languages=("it", "en"),
             ),
-            voice_transcriber=StaticVoiceTranscriber("status", language="fr"),
+            voice_transcriber=StaticVoiceTranscriber("bonjour", language="fr"),
         )
 
         response = bot.handle_update(
@@ -309,6 +309,28 @@ class TelegramControlTests(unittest.TestCase):
         )
 
         self.assertIn("Voice language not allowed", response)
+
+    def test_voice_command_accepts_valid_transcript_when_language_detection_is_wrong(self):
+        """Short valid commands should survive unreliable automatic language detection."""
+
+        bridge = FakeBridge(chat_id=123)
+        bot = TelegramControlBot(
+            bridge=bridge,
+            config=TelegramControlConfig(
+                allowed_workdirs=[self.tmp.name],
+                voice_enabled=True,
+                voice_allowed_languages=("it", "en"),
+            ),
+            voice_transcriber=StaticVoiceTranscriber("stato", language="fr"),
+        )
+
+        response = bot.handle_update(
+            {"message": {"chat": {"id": 123}, "voice": {"file_id": "voice-4"}}}
+        )
+
+        self.assertIn("Voice transcript: stato", response)
+        self.assertIn("Detected language: fr", response)
+        self.assertIn("Durex status", response)
 
     def test_worker_telegram_approvals_are_rejected_for_control_mode(self):
         """Control mode must reject competing Telegram getUpdates consumers."""

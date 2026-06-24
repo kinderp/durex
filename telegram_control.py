@@ -879,13 +879,28 @@ class TelegramControlBot:
         result = self.voice_transcriber.transcribe(audio_path, language=self.config.voice_language)
         if not result.text.strip():
             raise TelegramControlError("Voice transcription returned empty text.")
-        if result.language and result.language not in self.config.voice_allowed_languages:
-            allowed = ", ".join(self.config.voice_allowed_languages)
-            raise TelegramControlError(f"Voice language not allowed: {result.language}. Allowed: {allowed}")
 
-        command = parse_voice_command(result.text, workdir_aliases=self.config.voice_workdir_aliases)
+        language_allowed = (
+            self.config.voice_language is not None
+            or not result.language
+            or result.language in self.config.voice_allowed_languages
+        )
+        try:
+            command = parse_voice_command(result.text, workdir_aliases=self.config.voice_workdir_aliases)
+        except VoiceCommandError:
+            if not language_allowed:
+                allowed = ", ".join(self.config.voice_allowed_languages)
+                raise TelegramControlError(f"Voice language not allowed: {result.language}. Allowed: {allowed}")
+            raise
+
+        if not language_allowed:
+            allowed = ", ".join(self.config.voice_allowed_languages)
+            language_note = f"\nDetected language: {result.language} outside configured allow list ({allowed})."
+        else:
+            language_note = ""
+
         response = self.handle_voice_command(command)
-        return f"Voice transcript: {result.text}\n\n{response}"
+        return f"Voice transcript: {result.text}{language_note}\n\n{response}"
 
     def handle_update(self, update: dict) -> Optional[str]:
         """
