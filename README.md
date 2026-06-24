@@ -91,6 +91,7 @@ More diagrams are available in:
 - [`docs/PTY_VS_EVENTS.md`](docs/PTY_VS_EVENTS.md)
 - [`docs/TELEGRAM_APPROVALS.md`](docs/TELEGRAM_APPROVALS.md)
 - [`docs/TELEGRAM_REMOTE_CONTROL.md`](docs/TELEGRAM_REMOTE_CONTROL.md)
+- [`docs/TELEGRAM_VOICE_COMMANDS.md`](docs/TELEGRAM_VOICE_COMMANDS.md)
 - [`docs/SESSION_APPROVAL_DEDUP.md`](docs/SESSION_APPROVAL_DEDUP.md)
 - [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md)
 - [`docs/SPHINX_API_DOCUMENTATION.md`](docs/SPHINX_API_DOCUMENTATION.md)
@@ -104,6 +105,8 @@ You need:
 - Codex CLI installed and configured;
 - optional: `pytest` for running the test suite;
 - optional: a Telegram bot token and chat id for remote approvals.
+- optional: `faster-whisper` from `requirements-voice.txt` for local Telegram
+  voice commands.
 
 Check Python:
 
@@ -134,15 +137,20 @@ python3 -m venv .venv
 ├── approval_policy.py          # Approval policy engine
 ├── telegram_bridge.py          # Telegram Bot API bridge
 ├── telegram_control.py         # Telegram remote-control command router
+├── voice_commands.py           # Italian/English voice command parser
+├── voice_transcriber.py        # Optional local speech-to-text providers
 ├── pty_runner.py               # PTY runner and approval pipeline
 ├── config.example.yaml         # Planned v0.2 configuration shape
 ├── requirements-dev.txt        # Development documentation dependencies
+├── requirements-voice.txt      # Optional local voice transcription dependency
 ├── tests/
 │   ├── test_approval_detector.py
 │   ├── test_codex_queue.py
 │   ├── test_approval_policy.py
 │   ├── test_pty_runner.py
-│   └── test_telegram_control.py
+│   ├── test_telegram_control.py
+│   ├── test_voice_commands.py
+│   └── test_voice_transcriber.py
 └── docs/
     ├── ARCHITECTURE.md
     ├── CONFIGURATION.md
@@ -152,6 +160,7 @@ python3 -m venv .venv
     ├── SEQUENCE_DIAGRAMS.md
     ├── SPHINX_API_DOCUMENTATION.md
     ├── TELEGRAM_REMOTE_CONTROL.md
+    ├── TELEGRAM_VOICE_COMMANDS.md
     └── TELEGRAM_APPROVALS.md
 ```
 
@@ -619,6 +628,7 @@ Then add one task per folder. This keeps Codex isolated and avoids mixing files 
 | [`docs/PTY_VS_EVENTS.md`](docs/PTY_VS_EVENTS.md) | Comparison between PTY and structured events |
 | [`docs/TELEGRAM_APPROVALS.md`](docs/TELEGRAM_APPROVALS.md) | Telegram approval protocol |
 | [`docs/TELEGRAM_REMOTE_CONTROL.md`](docs/TELEGRAM_REMOTE_CONTROL.md) | Telegram queue remote-control mode |
+| [`docs/TELEGRAM_VOICE_COMMANDS.md`](docs/TELEGRAM_VOICE_COMMANDS.md) | Local Italian/English voice commands over Telegram |
 | [`docs/SESSION_APPROVAL_DEDUP.md`](docs/SESSION_APPROVAL_DEDUP.md) | Session id and approval deduplication fix |
 | [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) | Planned configuration model |
 | [`docs/SPHINX_API_DOCUMENTATION.md`](docs/SPHINX_API_DOCUMENTATION.md) | Sphinx API documentation contract and generation roadmap |

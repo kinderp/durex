@@ -529,6 +529,45 @@ worker to stop before starting another task.
 
 Details: [TELEGRAM_REMOTE_CONTROL.md](TELEGRAM_REMOTE_CONTROL.md)
 
+### Voice commands
+
+Telegram remote control can also accept voice messages when local transcription
+is enabled. Voice commands support Italian and English transcripts and use the
+same safe queue operations as text commands.
+
+Install the optional local speech-to-text dependency:
+
+```bash
+python3 -m venv .venv
+. .venv/bin/activate
+pip install -r requirements-voice.txt
+```
+
+Enable voice commands:
+
+```bash
+export DUREX_VOICE_ENABLED=1
+export DUREX_VOICE_MODEL=base
+export DUREX_VOICE_ALLOWED_LANGUAGES=it,en
+export DUREX_VOICE_WORKDIR_ALIASES="durex=/lab/durex"
+
+python3 codex_queue.py telegram-control --allowed-workdir /lab/durex
+```
+
+Example Italian voice command:
+
+```text
+aggiungi task titolo smoke test cartella durex priorita uno prompt leggi il readme
+```
+
+Example English voice command:
+
+```text
+add task title smoke test directory durex priority one prompt read the readme
+```
+
+Details: [TELEGRAM_VOICE_COMMANDS.md](TELEGRAM_VOICE_COMMANDS.md)
+
 ### First remote-control smoke test
 
 Use this after `telegram-check --send-test` works.
@@ -909,5 +948,6 @@ Recommended practices:
 - Runner design: [PTY_VS_EVENTS.md](PTY_VS_EVENTS.md)
 - Telegram approvals: [TELEGRAM_APPROVALS.md](TELEGRAM_APPROVALS.md)
 - Telegram remote control: [TELEGRAM_REMOTE_CONTROL.md](TELEGRAM_REMOTE_CONTROL.md)
+- Telegram voice commands: [TELEGRAM_VOICE_COMMANDS.md](TELEGRAM_VOICE_COMMANDS.md)
 - CLI documentation automation: [CLI_DOC_AUTOMATION.md](CLI_DOC_AUTOMATION.md)
 - Operating rules: [OPERATING_RULES.md](OPERATING_RULES.md)
