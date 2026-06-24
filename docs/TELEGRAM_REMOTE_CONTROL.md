@@ -340,6 +340,12 @@ Alternative single-line syntax:
 /add --title "Fix tests" --workdir /path/to/project --priority 10 -- Run the tests, fix failures, and summarize the changes.
 ```
 
+Plain trailing prompt syntax:
+
+```text
+/add --title "Fix tests" --workdir /path/to/project --priority 10 Run the tests, fix failures, and summarize the changes.
+```
+
 Options:
 
 | Option | Meaning |
@@ -351,7 +357,9 @@ Options:
 | `--prompt` | Prompt for Codex when sending `/add` as one line. Optional. |
 
 The prompt can be placed on the lines after the `/add` header, passed with
-`--prompt`, or placed after `--`.
+`--prompt`, placed after `--`, or written as plain trailing text. Prefer
+`--prompt` or `--` for long prompts because they make the boundary between
+options and prompt text explicit.
 
 ### `/run`
 
