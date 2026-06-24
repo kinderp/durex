@@ -91,11 +91,41 @@ class TelegramControlTests(unittest.TestCase):
         self.assertEqual(parsed.title, "Fix")
         self.assertEqual(parsed.prompt, "Run tests.")
 
+    def test_parse_add_command_accepts_prompt_option(self):
+        """Single-line Telegram clients can pass the prompt with --prompt."""
+
+        parsed = parse_add_command('/add --title "Fix" --prompt "Run tests."')
+
+        self.assertEqual(parsed.title, "Fix")
+        self.assertEqual(parsed.prompt, "Run tests.")
+
+    def test_parse_add_command_accepts_double_dash_prompt(self):
+        """Text after -- should be treated as the prompt body."""
+
+        parsed = parse_add_command('/add --title "Fix" -- Run tests.')
+
+        self.assertEqual(parsed.title, "Fix")
+        self.assertEqual(parsed.prompt, "Run tests.")
+
+    def test_parse_add_command_accepts_plain_inline_prompt(self):
+        """Plain trailing text should work for mobile Telegram clients."""
+
+        parsed = parse_add_command('/add --title "Fix" Run tests.')
+
+        self.assertEqual(parsed.title, "Fix")
+        self.assertEqual(parsed.prompt, "Run tests.")
+
     def test_parse_add_command_reports_syntax_error(self):
         """Argparse failures should become TelegramControlError exceptions."""
 
         with self.assertRaises(TelegramControlError):
             parse_add_command('/add --priority nope\nRun tests.')
+
+    def test_parse_add_command_rejects_unknown_option(self):
+        """Unknown options should not be silently treated as prompt text."""
+
+        with self.assertRaises(TelegramControlError):
+            parse_add_command('/add --unknown value')
 
     def test_path_is_allowed_accepts_child_directory(self):
         """Allowed workdir roots should authorize descendants only."""

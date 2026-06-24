@@ -309,6 +309,18 @@ Syntax:
 Run the tests, fix failures, and summarize the changes.
 ```
 
+Single-line syntax:
+
+```text
+/add --title "Fix tests" --workdir /path/to/project --priority 10 --prompt "Run the tests, fix failures, and summarize the changes."
+```
+
+Alternative single-line syntax:
+
+```text
+/add --title "Fix tests" --workdir /path/to/project --priority 10 -- Run the tests, fix failures, and summarize the changes.
+```
+
 Options:
 
 | Option | Meaning |
@@ -317,8 +329,10 @@ Options:
 | `--workdir` | Working directory for Codex. Must be inside an allowed root. |
 | `--priority` | Queue priority. Lower values run first. Default: `100`. |
 | `--max-attempts` | Maximum retry attempts. Default: `3`. |
+| `--prompt` | Prompt for Codex when sending `/add` as one line. Optional. |
 
-The prompt must be placed on the lines after the `/add` header.
+The prompt can be placed on the lines after the `/add` header, passed with
+`--prompt`, or placed after `--`.
 
 ### `/run`
 

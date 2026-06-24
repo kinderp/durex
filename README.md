@@ -418,6 +418,12 @@ Example Telegram command:
 Run the tests, fix the failures, and summarize the changes.
 ```
 
+Single-line form for Telegram clients where newline entry is awkward:
+
+```text
+/add --title "Fix tests" --workdir /path/to/projects/my-repo --priority 10 --prompt "Run the tests, fix the failures, and summarize the changes."
+```
+
 Then start the worker from Telegram:
 
 ```text
