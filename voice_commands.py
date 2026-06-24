@@ -87,44 +87,6 @@ NUMBER_WORDS = {
     "dieci": 10,
 }
 
-
-CYRILLIC_PHONETIC_TRANSLATION = str.maketrans(
-    {
-        "\u0430": "a",
-        "\u0431": "b",
-        "\u0432": "v",
-        "\u0433": "g",
-        "\u0434": "d",
-        "\u0435": "e",
-        "\u0451": "e",
-        "\u0436": "zh",
-        "\u0437": "z",
-        "\u0438": "i",
-        "\u0439": "i",
-        "\u043a": "k",
-        "\u043b": "l",
-        "\u043c": "m",
-        "\u043d": "n",
-        "\u043e": "o",
-        "\u043f": "p",
-        "\u0440": "r",
-        "\u0441": "s",
-        "\u0442": "t",
-        "\u0443": "u",
-        "\u0444": "f",
-        "\u0445": "h",
-        "\u0446": "ts",
-        "\u0447": "ch",
-        "\u0448": "sh",
-        "\u0449": "sh",
-        "\u044b": "y",
-        "\u044d": "e",
-        "\u044e": "yu",
-        "\u044f": "ya",
-    }
-)
-
-
 def normalize_transcript(text: str) -> str:
     """
     Normalize speech-to-text output for deterministic command parsing.
@@ -138,7 +100,7 @@ def normalize_transcript(text: str) -> str:
         slashes, dots, underscores and hyphens for paths.
     """
 
-    lowered = text.strip().lower().translate(CYRILLIC_PHONETIC_TRANSLATION)
+    lowered = text.strip().lower()
     lowered = re.sub(r"[,:;!?()\[\]{}\"']", " ", lowered)
     lowered = re.sub(r"\s+", " ", lowered)
     return lowered.strip()

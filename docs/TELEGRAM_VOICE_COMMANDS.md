@@ -238,10 +238,6 @@ Arabic and then write the transcript in that language's script. Durex avoids
 that path for normal command routing by trying the configured supported
 languages first.
 
-Some local Whisper models may also render short Italian/English phrases with
-Cyrillic letters, for example `Листа таск` for `lista task`. Durex normalizes
-common Cyrillic phonetic output before parsing supported commands.
-
 If you only want one language and want faster transcription, force it:
 
 ```bash

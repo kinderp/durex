@@ -394,30 +394,6 @@ class TelegramControlTests(unittest.TestCase):
         self.assertIn("No tasks found.", response)
         self.assertEqual(transcriber.calls, ["it", "en"])
 
-    def test_voice_tasks_accepts_cyrillic_phonetic_transcript(self):
-        """Task-list commands should survive Cyrillic phonetic transcription drift."""
-
-        bridge = FakeBridge(chat_id=123)
-        bot = TelegramControlBot(
-            bridge=bridge,
-            config=TelegramControlConfig(
-                allowed_workdirs=[self.tmp.name],
-                voice_enabled=True,
-                voice_allowed_languages=("it", "en"),
-            ),
-            voice_transcriber=StaticVoiceTranscriber(
-                "\u041b\u0438\u0441\u0442\u0430 \u0442\u0430\u0441\u043a",
-                language="ru",
-            ),
-        )
-
-        response = bot.handle_update(
-            {"message": {"chat": {"id": 123}, "voice": {"file_id": "voice-6"}}}
-        )
-
-        self.assertIn("Voice transcript: \u041b\u0438\u0441\u0442\u0430 \u0442\u0430\u0441\u043a", response)
-        self.assertIn("No tasks found.", response)
-
     def test_worker_telegram_approvals_are_rejected_for_control_mode(self):
         """Control mode must reject competing Telegram getUpdates consumers."""
 
