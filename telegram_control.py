@@ -282,12 +282,16 @@ def parse_add_command(text: str, default_workdir: str = ".") -> AddCommand:
     args, prompt_tokens = parser.parse_known_args(tokens[1:])
 
     prompt = prompt.strip() if separator else (args.prompt or "")
-    if not prompt and prompt_tokens:
-        if prompt_tokens[0] == "--":
+    if prompt_tokens:
+        if prompt_tokens[0] == "--" and not prompt:
             prompt_tokens = prompt_tokens[1:]
+            prompt = " ".join(prompt_tokens).strip()
+        elif prompt:
+            raise TelegramControlError(f"unexpected trailing argument: {prompt_tokens[0]}")
         elif prompt_tokens[0].startswith("-"):
             raise TelegramControlError(f"unrecognized argument: {prompt_tokens[0]}")
-        prompt = " ".join(prompt_tokens).strip()
+        else:
+            prompt = " ".join(prompt_tokens).strip()
     if not prompt:
         raise TelegramControlError("Missing prompt. Put it after --prompt, after --, or on the lines after /add.")
 
