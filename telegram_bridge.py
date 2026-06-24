@@ -39,6 +39,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 import json
 import os
+from pathlib import Path
 import time
 from typing import Any, Optional
 from urllib import parse, request, error
@@ -315,6 +316,20 @@ class TelegramApprovalBridge:
 
         return f"{self.config.api_base}/bot{self.config.bot_token}/{method}"
 
+    def file_url(self, file_path: str) -> str:
+        """
+        Return the full Telegram file download URL.
+
+        Args:
+            file_path:
+                Telegram file path returned by ``getFile``.
+
+        Returns:
+            URL used to download file bytes for this bot token.
+        """
+
+        return f"{self.config.api_base}/file/bot{self.config.bot_token}/{file_path}"
+
     def api_call(self, method: str, payload: dict[str, Any]) -> dict[str, Any]:
         """
         Call one Telegram Bot API method using JSON POST.
@@ -370,6 +385,49 @@ class TelegramApprovalBridge:
         if not isinstance(result, dict):
             raise TelegramBridgeError(f"Telegram getMe returned an invalid response: {data}")
         return result
+
+    def get_file(self, file_id: str) -> dict[str, Any]:
+        """
+        Return Telegram file metadata for a file id.
+
+        Args:
+            file_id:
+                Telegram file identifier from a message attachment.
+
+        Returns:
+            Telegram file metadata dictionary containing ``file_path``.
+        """
+
+        data = self.api_call("getFile", {"file_id": file_id})
+        result = data.get("result")
+        if not isinstance(result, dict):
+            raise TelegramBridgeError(f"Telegram getFile returned an invalid response: {data}")
+        return result
+
+    def download_file(self, file_path: str, destination: str) -> str:
+        """
+        Download one Telegram file to a local path.
+
+        Args:
+            file_path:
+                Telegram file path returned by ``getFile``.
+            destination:
+                Local destination path.
+
+        Returns:
+            Destination path.
+        """
+
+        target = Path(destination)
+        target.parent.mkdir(parents=True, exist_ok=True)
+
+        try:
+            with request.urlopen(self.file_url(file_path), timeout=60) as response:
+                target.write_bytes(response.read())
+        except error.URLError as exc:
+            raise TelegramBridgeError(f"Telegram file download failed: {exc}") from exc
+
+        return str(target)
 
     def build_message_text(self, approval: TelegramApprovalRequest) -> str:
         """

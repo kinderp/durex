@@ -15,12 +15,15 @@ import os
 from pathlib import Path
 import shlex
 import sqlite3
+import tempfile
 import threading
 import time
 from typing import Callable, Optional
 
 import codex_queue
 from telegram_bridge import TelegramApprovalBridge, TelegramBridgeConfig, TelegramBridgeError
+from voice_commands import VoiceCommand, VoiceCommandError, parse_voice_command
+from voice_transcriber import VoiceTranscriber, VoiceTranscriptionError, build_voice_transcriber
 
 
 DEFAULT_TASK_LIMIT = 10
@@ -86,6 +89,12 @@ class TelegramControlConfig:
     poll_timeout_seconds: int = 20
     retry_base_seconds: float = 1.0
     retry_max_seconds: float = 30.0
+    voice_enabled: bool = False
+    voice_provider: str = "faster_whisper"
+    voice_model: str = "base"
+    voice_language: Optional[str] = None
+    voice_allowed_languages: tuple[str, ...] = ("it", "en")
+    voice_workdir_aliases: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -305,6 +314,71 @@ def parse_add_command(text: str, default_workdir: str = ".") -> AddCommand:
     )
 
 
+def parse_bool_env(value: Optional[str]) -> bool:
+    """
+    Parse a boolean environment value.
+
+    Args:
+        value:
+            Raw environment variable value.
+
+    Returns:
+        True for common enabled values.
+    """
+
+    return bool(value and value.strip().lower() in {"1", "true", "yes", "on"})
+
+
+def parse_csv_env(value: Optional[str], default: tuple[str, ...]) -> tuple[str, ...]:
+    """
+    Parse a comma-separated environment value.
+
+    Args:
+        value:
+            Raw environment variable value.
+        default:
+            Default tuple when the value is empty.
+
+    Returns:
+        Tuple of stripped non-empty values.
+    """
+
+    if not value:
+        return default
+    parsed = tuple(item.strip() for item in value.split(",") if item.strip())
+    return parsed or default
+
+
+def parse_workdir_aliases(value: Optional[str]) -> dict[str, str]:
+    """
+    Parse voice workdir aliases from an environment value.
+
+    Format:
+        ``durex=/lab/durex,lab durex=/lab/durex``
+
+    Args:
+        value:
+            Raw alias environment variable.
+
+    Returns:
+        Mapping of spoken aliases to paths.
+    """
+
+    aliases: dict[str, str] = {}
+    if not value:
+        return aliases
+
+    for item in value.split(","):
+        if "=" not in item:
+            continue
+        alias, path = item.split("=", 1)
+        alias = alias.strip()
+        path = path.strip()
+        if alias and path:
+            aliases[alias] = path
+    return aliases
+
+
 def task_counts() -> dict[str, int]:
     """
     Return task counts by status.
@@ -468,7 +542,12 @@ class TelegramControlBot:
     queue state, creates a queued Codex task, or starts/stops the worker.
     """
 
-    def __init__(self, bridge: TelegramApprovalBridge, config: TelegramControlConfig) -> None:
+    def __init__(
+        self,
+        bridge: TelegramApprovalBridge,
+        config: TelegramControlConfig,
+        voice_transcriber: Optional[VoiceTranscriber] = None,
+    ) -> None:
         """
         Initialize the Telegram control bot.
 
@@ -492,7 +571,14 @@ class TelegramControlBot:
             poll_timeout_seconds=config.poll_timeout_seconds,
             retry_base_seconds=config.retry_base_seconds,
             retry_max_seconds=config.retry_max_seconds,
+            voice_enabled=config.voice_enabled,
+            voice_provider=config.voice_provider,
+            voice_model=config.voice_model,
+            voice_language=config.voice_language,
+            voice_allowed_languages=config.voice_allowed_languages,
+            voice_workdir_aliases=config.voice_workdir_aliases,
         )
+        self.voice_transcriber = voice_transcriber
         self.worker_state = WorkerState()
 
     @classmethod
@@ -503,6 +589,7 @@ class TelegramControlBot:
         worker_telegram_approvals: bool = False,
         telegram_verbosity: str = "normal",
         echo_output: bool = False,
+        voice_enabled: Optional[bool] = None,
     ) -> "TelegramControlBot":
         """
         Build a control bot from Durex Telegram environment variables.
@@ -545,9 +632,21 @@ class TelegramControlBot:
             raw = os.environ.get("DUREX_TELEGRAM_ALLOWED_WORKDIRS", os.getcwd())
             allowed_workdirs = [path for path in raw.split(os.pathsep) if path]
 
+        voice_is_enabled = parse_bool_env(os.environ.get("DUREX_VOICE_ENABLED")) if voice_enabled is None else voice_enabled
+        voice_provider = os.environ.get("DUREX_VOICE_PROVIDER", "faster_whisper")
+        voice_model = os.environ.get("DUREX_VOICE_MODEL", "base")
+        voice_language_env = os.environ.get("DUREX_VOICE_LANGUAGE", "auto").strip()
+        voice_language = None if voice_language_env in {"", "auto"} else voice_language_env
+        voice_allowed_languages = parse_csv_env(os.environ.get("DUREX_VOICE_ALLOWED_LANGUAGES"), ("it", "en"))
+        voice_workdir_aliases = parse_workdir_aliases(os.environ.get("DUREX_VOICE_WORKDIR_ALIASES"))
+
         bridge = TelegramApprovalBridge(
             TelegramBridgeConfig(bot_token=token, allowed_chat_id=int(chat_id))
         )
+        voice_transcriber = None
+        if voice_is_enabled:
+            voice_transcriber = build_voice_transcriber(provider=voice_provider, model_name=voice_model)
+
         return cls(
             bridge=bridge,
             config=TelegramControlConfig(
@@ -556,7 +655,14 @@ class TelegramControlBot:
                 worker_telegram_approvals=worker_telegram_approvals,
                 telegram_verbosity=telegram_verbosity,
                 echo_output=echo_output,
+                voice_enabled=voice_is_enabled,
+                voice_provider=voice_provider,
+                voice_model=voice_model,
+                voice_language=voice_language,
+                voice_allowed_languages=voice_allowed_languages,
+                voice_workdir_aliases=voice_workdir_aliases,
             ),
+            voice_transcriber=voice_transcriber,
         )
 
     def send(self, text: str) -> None:
@@ -608,6 +714,73 @@ class TelegramControlBot:
             self.worker_state.stop_after_current = True
         return "Worker will stop before starting another task."
 
+    def add_task_from_values(self, title: str, prompt: str, workdir: str, priority: int = 100, max_attempts: int = 3) -> str:
+        """
+        Add a task after enforcing the remote-control workdir boundary.
+
+        Args:
+            title:
+                Queue task title.
+            prompt:
+                Codex prompt.
+            workdir:
+                Requested workdir.
+            priority:
+                Queue priority.
+            max_attempts:
+                Maximum retry attempts.
+
+        Returns:
+            Confirmation text.
+        """
+
+        resolved = str(Path(workdir).expanduser().resolve())
+        if not path_is_allowed(resolved, self.config.allowed_workdirs):
+            allowed = "\n".join(self.config.allowed_workdirs)
+            raise TelegramControlError(f"Workdir is not allowed: {resolved}\nAllowed roots:\n{allowed}")
+        codex_queue.init_db()
+        codex_queue.add_task(
+            title=title,
+            prompt=prompt,
+            workdir=resolved,
+            priority=priority,
+            max_attempts=max_attempts,
+        )
+        return f"Task added: {title}"
+
+    def handle_voice_command(self, command: VoiceCommand) -> str:
+        """
+        Execute one parsed voice command through safe Durex operations.
+
+        Args:
+            command:
+                Structured command from voice_commands.py.
+
+        Returns:
+            Telegram response text.
+        """
+
+        if command.action == "status":
+            return format_status(self.worker_state.is_running(), self.worker_state.last_error)
+        if command.action == "tasks":
+            return list_recent_tasks(limit=command.limit or DEFAULT_TASK_LIMIT)
+        if command.action == "tail":
+            return tail_task_output(task_id=command.task_id)
+        if command.action == "run":
+            return self.start_worker()
+        if command.action == "stop":
+            return self.stop_worker_after_current()
+        if command.action == "add":
+            if not command.title or not command.workdir or not command.prompt:
+                raise TelegramControlError("Voice add command is missing title, workdir or prompt.")
+            return self.add_task_from_values(
+                title=command.title,
+                prompt=command.prompt,
+                workdir=command.workdir,
+                priority=command.priority,
+            )
+        raise TelegramControlError(f"Unsupported voice command action: {command.action}")
+
     def handle_text(self, text: str) -> str:
         """
         Handle one authorized Telegram message text.
@@ -645,18 +818,13 @@ class TelegramControlBot:
 
         if command == "/add":
             add = parse_add_command(stripped)
-            if not path_is_allowed(add.workdir, self.config.allowed_workdirs):
-                allowed = "\n".join(self.config.allowed_workdirs)
-                raise TelegramControlError(f"Workdir is not allowed: {add.workdir}\nAllowed roots:\n{allowed}")
-            codex_queue.init_db()
-            codex_queue.add_task(
+            return self.add_task_from_values(
                 title=add.title,
                 prompt=add.prompt,
                 workdir=add.workdir,
                 priority=add.priority,
                 max_attempts=add.max_attempts,
             )
-            return f"Task added: {add.title}"
 
         if command == "/run" and len(parts) == 1:
             return self.start_worker()
@@ -665,6 +833,59 @@ class TelegramControlBot:
             return self.stop_worker_after_current()
 
         return "Unknown command. Send /help."
+
+    def download_voice_message(self, voice: dict) -> str:
+        """
+        Download a Telegram voice attachment to a temporary file.
+
+        Args:
+            voice:
+                Telegram voice attachment object.
+
+        Returns:
+            Local audio path.
+        """
+
+        file_id = voice.get("file_id")
+        if not file_id:
+            raise TelegramControlError("Voice message has no file_id.")
+        file_info = self.bridge.get_file(str(file_id))
+        file_path = file_info.get("file_path")
+        if not file_path:
+            raise TelegramControlError("Telegram did not return a voice file path.")
+
+        suffix = Path(str(file_path)).suffix or ".ogg"
+        destination = Path(tempfile.gettempdir()) / "durex_voice" / f"{file_id}{suffix}"
+        return self.bridge.download_file(str(file_path), str(destination))
+
+    def handle_voice(self, voice: dict) -> str:
+        """
+        Handle one authorized Telegram voice attachment.
+
+        Args:
+            voice:
+                Telegram voice attachment object.
+
+        Returns:
+            Response text for Telegram.
+        """
+
+        if not self.config.voice_enabled:
+            return "Voice commands are disabled. Set DUREX_VOICE_ENABLED=1 and install requirements-voice.txt."
+        if self.voice_transcriber is None:
+            raise TelegramControlError("Voice transcription is not configured.")
+
+        audio_path = self.download_voice_message(voice)
+        result = self.voice_transcriber.transcribe(audio_path, language=self.config.voice_language)
+        if not result.text.strip():
+            raise TelegramControlError("Voice transcription returned empty text.")
+        if result.language and result.language not in self.config.voice_allowed_languages:
+            allowed = ", ".join(self.config.voice_allowed_languages)
+            raise TelegramControlError(f"Voice language not allowed: {result.language}. Allowed: {allowed}")
+
+        command = parse_voice_command(result.text, workdir_aliases=self.config.voice_workdir_aliases)
+        response = self.handle_voice_command(command)
+        return f"Voice transcript: {result.text}\n\n{response}"
 
     def handle_update(self, update: dict) -> Optional[str]:
         """
@@ -692,12 +913,16 @@ class TelegramControlBot:
             return None
 
         text = message.get("text")
-        if not text:
+        voice = message.get("voice")
+        if not text and not voice:
             return None
 
         try:
-            response = self.handle_text(text)
-        except (TelegramControlError, ValueError, sqlite3.Error) as exc:
+            if text:
+                response = self.handle_text(text)
+            else:
+                response = self.handle_voice(voice)
+        except (TelegramControlError, VoiceCommandError, VoiceTranscriptionError, ValueError, sqlite3.Error) as exc:
             response = f"Command rejected: {exc}"
 
         self.send(response)
@@ -739,6 +964,7 @@ Prompt text for Codex...
 /tail [task_id] - show task output tail
 /stop - stop worker before the next task starts
 
+Voice commands are supported when DUREX_VOICE_ENABLED=1.
 Remote control does not execute shell input directly."""
 
 

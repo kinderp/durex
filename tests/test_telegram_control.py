@@ -17,6 +17,7 @@ from telegram_control import (
     parse_add_command,
     path_is_allowed,
 )
+from voice_transcriber import StaticVoiceTranscriber
 
 
 class FakeBridge:
@@ -33,6 +34,18 @@ class FakeBridge:
 
         self.messages.append(text)
         return len(self.messages)
+
+    def get_file(self, file_id):
+        """Return deterministic fake Telegram file metadata."""
+
+        return {"file_path": f"voice/{file_id}.ogg"}
+
+    def download_file(self, file_path, destination):
+        """Write a small fake voice file and return its path."""
+
+        Path(destination).parent.mkdir(parents=True, exist_ok=True)
+        Path(destination).write_bytes(b"fake voice")
+        return destination
 
 
 class FlakyBridge(FakeBridge):
@@ -215,6 +228,87 @@ class TelegramControlTests(unittest.TestCase):
         response = bot.handle_update({"message": {"chat": {"id": 123}, "text": "/status@DurexBot"}})
 
         self.assertIn("Durex status", response)
+
+    def test_voice_message_is_rejected_when_disabled(self):
+        """Voice attachments should be ignored unless voice commands are enabled."""
+
+        bridge = FakeBridge(chat_id=123)
+        bot = TelegramControlBot(
+            bridge=bridge,
+            config=TelegramControlConfig(allowed_workdirs=[self.tmp.name]),
+        )
+
+        response = bot.handle_update(
+            {"message": {"chat": {"id": 123}, "voice": {"file_id": "voice-1"}}}
+        )
+
+        self.assertIn("Voice commands are disabled", response)
+
+    def test_voice_status_command(self):
+        """A transcribed Italian status voice command should route to status."""
+
+        bridge = FakeBridge(chat_id=123)
+        bot = TelegramControlBot(
+            bridge=bridge,
+            config=TelegramControlConfig(allowed_workdirs=[self.tmp.name], voice_enabled=True),
+            voice_transcriber=StaticVoiceTranscriber("stato", language="it"),
+        )
+
+        response = bot.handle_update(
+            {"message": {"chat": {"id": 123}, "voice": {"file_id": "voice-1"}}}
+        )
+
+        self.assertIn("Voice transcript: stato", response)
+        self.assertIn("Durex status", response)
+
+    def test_voice_add_command_uses_alias_and_creates_task(self):
+        """A transcribed add command should use aliases and enqueue a task."""
+
+        bridge = FakeBridge(chat_id=123)
+        bot = TelegramControlBot(
+            bridge=bridge,
+            config=TelegramControlConfig(
+                allowed_workdirs=[self.tmp.name],
+                voice_enabled=True,
+                voice_workdir_aliases={"temp": self.tmp.name},
+            ),
+            voice_transcriber=StaticVoiceTranscriber(
+                "aggiungi task titolo prova vocale cartella temp priorita uno prompt leggi readme",
+                language="it",
+            ),
+        )
+
+        response = bot.handle_update(
+            {"message": {"chat": {"id": 123}, "voice": {"file_id": "voice-2"}}}
+        )
+
+        self.assertIn("Task added: prova vocale", response)
+        with codex_queue.connect() as con:
+            row = con.execute("SELECT title, prompt, workdir, priority FROM tasks").fetchone()
+        self.assertEqual(row[0], "prova vocale")
+        self.assertEqual(row[1], "leggi readme")
+        self.assertEqual(row[2], str(Path(self.tmp.name).resolve()))
+        self.assertEqual(row[3], 1)
+
+    def test_voice_message_rejects_disallowed_language(self):
+        """Languages outside the configured allow list should be rejected."""
+
+        bridge = FakeBridge(chat_id=123)
+        bot = TelegramControlBot(
+            bridge=bridge,
+            config=TelegramControlConfig(
+                allowed_workdirs=[self.tmp.name],
+                voice_enabled=True,
+                voice_allowed_languages=("it", "en"),
+            ),
+            voice_transcriber=StaticVoiceTranscriber("status", language="fr"),
+        )
+
+        response = bot.handle_update(
+            {"message": {"chat": {"id": 123}, "voice": {"file_id": "voice-3"}}}
+        )
+
+        self.assertIn("Voice language not allowed", response)
 
     def test_worker_telegram_approvals_are_rejected_for_control_mode(self):
         """Control mode must reject competing Telegram getUpdates consumers."""
