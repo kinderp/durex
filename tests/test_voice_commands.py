@@ -32,6 +32,14 @@ class VoiceCommandTests(unittest.TestCase):
         self.assertEqual(command.action, "tasks")
         self.assertEqual(command.limit, 5)
 
+    def test_tasks_accepts_cyrillic_phonetic_transcript(self):
+        """Whisper may render short Italian phrases with Cyrillic letters."""
+
+        command = parse_voice_command("\u041b\u0438\u0441\u0442\u0430 \u0442\u0430\u0441\u043a")
+
+        self.assertEqual(command.action, "tasks")
+        self.assertEqual(command.transcript, "lista task")
+
     def test_tail_with_english_task_id(self):
         """English tail commands can target a spoken task id."""
 

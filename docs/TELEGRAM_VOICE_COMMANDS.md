@@ -232,6 +232,10 @@ command even when the detector reports a different language. Unrecognized
 transcripts are rejected by the command parser and the Telegram response
 includes the transcript plus detected language for troubleshooting.
 
+Some local Whisper models may also render short Italian/English phrases with
+Cyrillic letters, for example `Листа таск` for `lista task`. Durex normalizes
+common Cyrillic phonetic output before parsing supported commands.
+
 If automatic language detection is repeatedly wrong, force a language:
 
 ```bash
