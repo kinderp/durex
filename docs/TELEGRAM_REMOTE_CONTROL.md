@@ -146,6 +146,11 @@ Create a Telegram bot and set the credentials:
 export DUREX_TELEGRAM_BOT_TOKEN="your-bot-token"
 ```
 
+If you lost an existing bot token, open `@BotFather`, send `/mybots`, select the
+bot, then open `API Token` to copy or regenerate the token. Regenerating the
+token invalidates the old value, so update `DUREX_TELEGRAM_BOT_TOKEN` before
+starting Durex.
+
 Validate the token:
 
 ```bash
@@ -163,6 +168,16 @@ python3 codex_queue.py telegram-check --send-test
 
 Private chat ids are usually positive integers. Group and supergroup ids are
 often negative. Use exactly the value printed by `telegram-check`.
+
+If you lose the chat id later, send `/start` or any normal message to the bot,
+then rerun:
+
+```bash
+unset DUREX_TELEGRAM_CHAT_ID
+python3 codex_queue.py telegram-check --discover-chat-id --poll-timeout 30
+```
+
+Export the printed value and verify with `telegram-check --send-test`.
 
 Official Telegram references:
 
@@ -196,6 +211,10 @@ python3 codex_queue.py telegram-control
 ```
 
 If no allowed root is provided, Durex allows only the current working directory.
+
+For a full first-use checklist and a smoke test that exercises `/status`,
+`/tasks`, `/add`, `/run`, `/tail`, and `/stop`, see
+[USER_GUIDE.md - First remote-control smoke test](USER_GUIDE.md#first-remote-control-smoke-test).
 
 ---
 
@@ -309,6 +328,24 @@ Syntax:
 Run the tests, fix failures, and summarize the changes.
 ```
 
+Single-line syntax:
+
+```text
+/add --title "Fix tests" --workdir /path/to/project --priority 10 --prompt "Run the tests, fix failures, and summarize the changes."
+```
+
+Alternative single-line syntax:
+
+```text
+/add --title "Fix tests" --workdir /path/to/project --priority 10 -- Run the tests, fix failures, and summarize the changes.
+```
+
+Plain trailing prompt syntax:
+
+```text
+/add --title "Fix tests" --workdir /path/to/project --priority 10 Run the tests, fix failures, and summarize the changes.
+```
+
 Options:
 
 | Option | Meaning |
@@ -317,8 +354,12 @@ Options:
 | `--workdir` | Working directory for Codex. Must be inside an allowed root. |
 | `--priority` | Queue priority. Lower values run first. Default: `100`. |
 | `--max-attempts` | Maximum retry attempts. Default: `3`. |
+| `--prompt` | Prompt for Codex when sending `/add` as one line. Optional. |
 
-The prompt must be placed on the lines after the `/add` header.
+The prompt can be placed on the lines after the `/add` header, passed with
+`--prompt`, placed after `--`, or written as plain trailing text. Prefer
+`--prompt` or `--` for long prompts because they make the boundary between
+options and prompt text explicit.
 
 ### `/run`
 

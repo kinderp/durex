@@ -248,6 +248,10 @@ def parse_add_command(text: str, default_workdir: str = ".") -> AddCommand:
         /add --title "Fix tests" --workdir /repo --priority 10
         Prompt text for Codex...
 
+        /add --title "Fix tests" --workdir /repo --prompt "Run tests"
+
+        /add --title "Fix tests" --workdir /repo -- Run tests
+
     Args:
         text:
             Full Telegram message text.
@@ -273,12 +277,23 @@ def parse_add_command(text: str, default_workdir: str = ".") -> AddCommand:
     parser.add_argument("--workdir", default=default_workdir)
     parser.add_argument("--priority", type=int, default=100)
     parser.add_argument("--max-attempts", type=int, default=3)
+    parser.add_argument("--prompt")
 
-    args = parser.parse_args(tokens[1:])
+    args, prompt_tokens = parser.parse_known_args(tokens[1:])
 
-    prompt = prompt.strip() if separator else ""
+    prompt = prompt.strip() if separator else (args.prompt or "")
+    if prompt_tokens:
+        if prompt_tokens[0] == "--" and not prompt:
+            prompt_tokens = prompt_tokens[1:]
+            prompt = " ".join(prompt_tokens).strip()
+        elif prompt:
+            raise TelegramControlError(f"unexpected trailing argument: {prompt_tokens[0]}")
+        elif prompt_tokens[0].startswith("-"):
+            raise TelegramControlError(f"unrecognized argument: {prompt_tokens[0]}")
+        else:
+            prompt = " ".join(prompt_tokens).strip()
     if not prompt:
-        raise TelegramControlError("Missing prompt. Put it on the lines after /add.")
+        raise TelegramControlError("Missing prompt. Put it after --prompt, after --, or on the lines after /add.")
 
     title = args.title or default_title(prompt)
     return AddCommand(
