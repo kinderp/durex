@@ -127,6 +127,12 @@ class TelegramControlTests(unittest.TestCase):
         with self.assertRaises(TelegramControlError):
             parse_add_command('/add --unknown value')
 
+    def test_parse_add_command_rejects_unknown_option_after_prompt(self):
+        """Unknown trailing options after --prompt should not be ignored."""
+
+        with self.assertRaises(TelegramControlError):
+            parse_add_command('/add --title "Fix" --prompt "Run tests." --unknown value')
+
     def test_path_is_allowed_accepts_child_directory(self):
         """Allowed workdir roots should authorize descendants only."""
 
