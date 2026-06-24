@@ -17,7 +17,7 @@ from telegram_control import (
     parse_add_command,
     path_is_allowed,
 )
-from voice_transcriber import StaticVoiceTranscriber
+from voice_transcriber import StaticVoiceTranscriber, TranscriptionResult
 
 
 class FakeBridge:
@@ -66,6 +66,30 @@ class FlakyBridge(FakeBridge):
         if self.poll_calls == 2:
             return [{"message": {"chat": {"id": 123}, "text": "/status"}}]
         raise KeyboardInterrupt
+
+
+class MappingVoiceTranscriber:
+    """Voice transcriber double that can vary output by requested language."""
+
+    provider_name = "mapping"
+
+    def __init__(self, responses):
+        """Store language-keyed transcription responses."""
+
+        self.responses = responses
+        self.calls = []
+
+    def transcribe(self, audio_path, language=None):
+        """Return the response configured for the requested language."""
+
+        self.calls.append(language)
+        text, detected_language = self.responses[language]
+        return TranscriptionResult(
+            text=text,
+            language=detected_language,
+            provider=self.provider_name,
+            confidence=1.0,
+        )
 
 
 class TelegramControlTests(unittest.TestCase):
@@ -309,13 +333,20 @@ class TelegramControlTests(unittest.TestCase):
         )
 
         self.assertIn("Voice command not recognized", response)
-        self.assertIn("Transcript: bonjour", response)
-        self.assertIn("Detected language: fr", response)
+        self.assertIn("it: bonjour", response)
+        self.assertIn("en: bonjour", response)
 
-    def test_voice_command_accepts_valid_transcript_when_language_detection_is_wrong(self):
-        """Short valid commands should survive unreliable automatic language detection."""
+    def test_voice_auto_mode_forces_supported_language_before_free_detection(self):
+        """Auto mode should probe supported languages before free language detection."""
 
         bridge = FakeBridge(chat_id=123)
+        transcriber = MappingVoiceTranscriber(
+            {
+                "it": ("avvia worker", "it"),
+                "en": ("start worker", "en"),
+                None: ("\u0623\u0628\u0648\u064a\u0627 \u0648\u0627\u0631\u0643\u0631", "ar"),
+            }
+        )
         bot = TelegramControlBot(
             bridge=bridge,
             config=TelegramControlConfig(
@@ -323,21 +354,28 @@ class TelegramControlTests(unittest.TestCase):
                 voice_enabled=True,
                 voice_allowed_languages=("it", "en"),
             ),
-            voice_transcriber=StaticVoiceTranscriber("stato", language="fr"),
+            voice_transcriber=transcriber,
         )
 
         response = bot.handle_update(
             {"message": {"chat": {"id": 123}, "voice": {"file_id": "voice-4"}}}
         )
 
-        self.assertIn("Voice transcript: stato", response)
-        self.assertIn("Detected language: fr", response)
-        self.assertIn("Durex status", response)
+        self.assertIn("Voice transcript: avvia worker", response)
+        self.assertIn("Worker started.", response)
+        self.assertEqual(transcriber.calls, ["it"])
 
     def test_voice_tasks_accepts_language_detection_drift(self):
         """Task-list commands should not be blocked by wrong automatic language detection."""
 
         bridge = FakeBridge(chat_id=123)
+        transcriber = MappingVoiceTranscriber(
+            {
+                "it": ("qualcosa non valido", "it"),
+                "en": ("lista task", "en"),
+                None: ("lista task", "es"),
+            }
+        )
         bot = TelegramControlBot(
             bridge=bridge,
             config=TelegramControlConfig(
@@ -345,7 +383,7 @@ class TelegramControlTests(unittest.TestCase):
                 voice_enabled=True,
                 voice_allowed_languages=("it", "en"),
             ),
-            voice_transcriber=StaticVoiceTranscriber("lista task", language="es"),
+            voice_transcriber=transcriber,
         )
 
         response = bot.handle_update(
@@ -353,8 +391,8 @@ class TelegramControlTests(unittest.TestCase):
         )
 
         self.assertIn("Voice transcript: lista task", response)
-        self.assertIn("Detected language: es", response)
         self.assertIn("No tasks found.", response)
+        self.assertEqual(transcriber.calls, ["it", "en"])
 
     def test_voice_tasks_accepts_cyrillic_phonetic_transcript(self):
         """Task-list commands should survive Cyrillic phonetic transcription drift."""
@@ -378,7 +416,6 @@ class TelegramControlTests(unittest.TestCase):
         )
 
         self.assertIn("Voice transcript: \u041b\u0438\u0441\u0442\u0430 \u0442\u0430\u0441\u043a", response)
-        self.assertIn("Detected language: ru", response)
         self.assertIn("No tasks found.", response)
 
     def test_worker_telegram_approvals_are_rejected_for_control_mode(self):

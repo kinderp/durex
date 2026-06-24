@@ -858,6 +858,59 @@ class TelegramControlBot:
         destination = Path(tempfile.gettempdir()) / "durex_voice" / f"{file_id}{suffix}"
         return self.bridge.download_file(str(file_path), str(destination))
 
+    def transcribe_voice_command(self, audio_path: str) -> tuple[str, VoiceCommand, Optional[str]]:
+        """
+        Transcribe audio and parse it into a voice command.
+
+        In automatic mode Durex probes the configured supported languages
+        explicitly instead of relying on Whisper language detection for short
+        command phrases.
+
+        Args:
+            audio_path:
+                Local voice attachment path.
+
+        Returns:
+            Tuple of transcript, parsed command, and detected language.
+        """
+
+        languages: list[Optional[str]]
+        if self.config.voice_language is None:
+            languages = list(self.config.voice_allowed_languages)
+        else:
+            languages = [self.config.voice_language]
+
+        attempts: list[str] = []
+        for language in languages:
+            result = self.voice_transcriber.transcribe(audio_path, language=language)
+            detected = result.language or language or "unknown"
+            transcript = result.text.strip()
+            if not transcript:
+                attempts.append(f"{language or 'auto'}: empty transcript")
+                continue
+            try:
+                command = parse_voice_command(transcript, workdir_aliases=self.config.voice_workdir_aliases)
+                return transcript, command, detected
+            except VoiceCommandError:
+                attempts.append(f"{language or 'auto'}: {transcript} (detected {detected})")
+
+        if self.config.voice_language is None:
+            result = self.voice_transcriber.transcribe(audio_path, language=None)
+            detected = result.language or "unknown"
+            transcript = result.text.strip()
+            if transcript:
+                try:
+                    command = parse_voice_command(transcript, workdir_aliases=self.config.voice_workdir_aliases)
+                    return transcript, command, detected
+                except VoiceCommandError:
+                    attempts.append(f"auto: {transcript} (detected {detected})")
+            else:
+                attempts.append("auto: empty transcript")
+
+        if attempts:
+            raise TelegramControlError("Voice command not recognized after transcription attempts: " + "; ".join(attempts))
+        raise TelegramControlError("Voice transcription returned empty text.")
+
     def handle_voice(self, voice: dict) -> str:
         """
         Handle one authorized Telegram voice attachment.
@@ -876,30 +929,20 @@ class TelegramControlBot:
             raise TelegramControlError("Voice transcription is not configured.")
 
         audio_path = self.download_voice_message(voice)
-        result = self.voice_transcriber.transcribe(audio_path, language=self.config.voice_language)
-        if not result.text.strip():
-            raise TelegramControlError("Voice transcription returned empty text.")
-
-        try:
-            command = parse_voice_command(result.text, workdir_aliases=self.config.voice_workdir_aliases)
-        except VoiceCommandError as exc:
-            detected = result.language or "unknown"
-            raise TelegramControlError(
-                f"{exc} Transcript: {result.text}. Detected language: {detected}."
-            ) from exc
+        transcript, command, detected_language = self.transcribe_voice_command(audio_path)
 
         if (
             self.config.voice_language is None
-            and result.language
-            and result.language not in self.config.voice_allowed_languages
+            and detected_language
+            and detected_language not in self.config.voice_allowed_languages
         ):
             allowed = ", ".join(self.config.voice_allowed_languages)
-            language_note = f"\nDetected language: {result.language} outside configured allow list ({allowed})."
+            language_note = f"\nDetected language: {detected_language} outside configured allow list ({allowed})."
         else:
             language_note = ""
 
         response = self.handle_voice_command(command)
-        return f"Voice transcript: {result.text}{language_note}\n\n{response}"
+        return f"Voice transcript: {transcript}{language_note}\n\n{response}"
 
     def handle_update(self, update: dict) -> Optional[str]:
         """

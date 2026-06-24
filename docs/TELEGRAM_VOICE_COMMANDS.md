@@ -60,6 +60,12 @@ export DUREX_VOICE_LANGUAGE=auto
 export DUREX_VOICE_ALLOWED_LANGUAGES=it,en
 ```
 
+With `DUREX_VOICE_LANGUAGE=auto`, Durex probes the allowed languages
+explicitly in order. For the default above it transcribes with an Italian hint
+first, then an English hint, and accepts the first transcript that parses as a
+supported Durex command. Free Whisper language detection is used only as a final
+diagnostic fallback.
+
 Start remote control:
 
 ```bash
@@ -220,23 +226,23 @@ pip install -r requirements-voice.txt
 
 ### Language Detection Drift
 
-Durex records whether automatic detection reports a language outside:
+Durex probes these languages when `DUREX_VOICE_LANGUAGE=auto`:
 
 ```bash
 export DUREX_VOICE_ALLOWED_LANGUAGES=it,en
 ```
 
-Automatic detection can be unreliable for very short voice messages such as
-`stato`, `status` or `lista task`. Durex now accepts a recognized Durex voice
-command even when the detector reports a different language. Unrecognized
-transcripts are rejected by the command parser and the Telegram response
-includes the transcript plus detected language for troubleshooting.
+Free automatic detection can be unreliable for very short voice messages such as
+`stato`, `status` or `lista task`. Some models may detect Spanish, Russian, or
+Arabic and then write the transcript in that language's script. Durex avoids
+that path for normal command routing by trying the configured supported
+languages first.
 
 Some local Whisper models may also render short Italian/English phrases with
 Cyrillic letters, for example `Листа таск` for `lista task`. Durex normalizes
 common Cyrillic phonetic output before parsing supported commands.
 
-If automatic language detection is repeatedly wrong, force a language:
+If you only want one language and want faster transcription, force it:
 
 ```bash
 export DUREX_VOICE_LANGUAGE=it
