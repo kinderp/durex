@@ -218,18 +218,19 @@ Install:
 pip install -r requirements-voice.txt
 ```
 
-### Language rejected
+### Language Detection Drift
 
-Durex only accepts languages listed in:
+Durex records whether automatic detection reports a language outside:
 
 ```bash
 export DUREX_VOICE_ALLOWED_LANGUAGES=it,en
 ```
 
 Automatic detection can be unreliable for very short voice messages such as
-`stato` or `status`. Durex accepts a recognized Durex voice command even when
-the detector reports a different language, but unrecognized transcripts from
-outside the allow list are still rejected.
+`stato`, `status` or `lista task`. Durex now accepts a recognized Durex voice
+command even when the detector reports a different language. Unrecognized
+transcripts are rejected by the command parser and the Telegram response
+includes the transcript plus detected language for troubleshooting.
 
 If automatic language detection is repeatedly wrong, force a language:
 

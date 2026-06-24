@@ -223,10 +223,10 @@ def parse_voice_command(transcript: str, workdir_aliases: Optional[dict[str, str
     if text in {"status", "stato", "stato coda", "queue status"}:
         return VoiceCommand(action="status", transcript=text)
 
-    if text in {"tasks", "task", "lista task", "mostra task", "list tasks", "show tasks"}:
+    if text in {"tasks", "task", "lista task", "lista tasks", "mostra task", "mostra tasks", "list tasks", "show tasks"}:
         return VoiceCommand(action="tasks", limit=DEFAULT_TASK_LIMIT, transcript=text)
 
-    if text.startswith(("lista task ", "mostra task ", "list tasks ", "show tasks ")):
+    if text.startswith(("lista task ", "lista tasks ", "mostra task ", "mostra tasks ", "list tasks ", "show tasks ")):
         limit = find_first_number(text)
         return VoiceCommand(action="tasks", limit=limit or DEFAULT_TASK_LIMIT, transcript=text)
 

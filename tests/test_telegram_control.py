@@ -290,8 +290,8 @@ class TelegramControlTests(unittest.TestCase):
         self.assertEqual(row[2], str(Path(self.tmp.name).resolve()))
         self.assertEqual(row[3], 1)
 
-    def test_voice_message_rejects_disallowed_language(self):
-        """Languages outside the configured allow list should be rejected."""
+    def test_voice_message_reports_unrecognized_transcript_with_detected_language(self):
+        """Unrecognized transcripts should report the text instead of failing on language first."""
 
         bridge = FakeBridge(chat_id=123)
         bot = TelegramControlBot(
@@ -308,7 +308,9 @@ class TelegramControlTests(unittest.TestCase):
             {"message": {"chat": {"id": 123}, "voice": {"file_id": "voice-3"}}}
         )
 
-        self.assertIn("Voice language not allowed", response)
+        self.assertIn("Voice command not recognized", response)
+        self.assertIn("Transcript: bonjour", response)
+        self.assertIn("Detected language: fr", response)
 
     def test_voice_command_accepts_valid_transcript_when_language_detection_is_wrong(self):
         """Short valid commands should survive unreliable automatic language detection."""
@@ -331,6 +333,28 @@ class TelegramControlTests(unittest.TestCase):
         self.assertIn("Voice transcript: stato", response)
         self.assertIn("Detected language: fr", response)
         self.assertIn("Durex status", response)
+
+    def test_voice_tasks_accepts_language_detection_drift(self):
+        """Task-list commands should not be blocked by wrong automatic language detection."""
+
+        bridge = FakeBridge(chat_id=123)
+        bot = TelegramControlBot(
+            bridge=bridge,
+            config=TelegramControlConfig(
+                allowed_workdirs=[self.tmp.name],
+                voice_enabled=True,
+                voice_allowed_languages=("it", "en"),
+            ),
+            voice_transcriber=StaticVoiceTranscriber("lista task", language="es"),
+        )
+
+        response = bot.handle_update(
+            {"message": {"chat": {"id": 123}, "voice": {"file_id": "voice-5"}}}
+        )
+
+        self.assertIn("Voice transcript: lista task", response)
+        self.assertIn("Detected language: es", response)
+        self.assertIn("No tasks found.", response)
 
     def test_worker_telegram_approvals_are_rejected_for_control_mode(self):
         """Control mode must reject competing Telegram getUpdates consumers."""

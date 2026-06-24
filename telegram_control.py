@@ -880,20 +880,19 @@ class TelegramControlBot:
         if not result.text.strip():
             raise TelegramControlError("Voice transcription returned empty text.")
 
-        language_allowed = (
-            self.config.voice_language is not None
-            or not result.language
-            or result.language in self.config.voice_allowed_languages
-        )
         try:
             command = parse_voice_command(result.text, workdir_aliases=self.config.voice_workdir_aliases)
-        except VoiceCommandError:
-            if not language_allowed:
-                allowed = ", ".join(self.config.voice_allowed_languages)
-                raise TelegramControlError(f"Voice language not allowed: {result.language}. Allowed: {allowed}")
-            raise
+        except VoiceCommandError as exc:
+            detected = result.language or "unknown"
+            raise TelegramControlError(
+                f"{exc} Transcript: {result.text}. Detected language: {detected}."
+            ) from exc
 
-        if not language_allowed:
+        if (
+            self.config.voice_language is None
+            and result.language
+            and result.language not in self.config.voice_allowed_languages
+        ):
             allowed = ", ".join(self.config.voice_allowed_languages)
             language_note = f"\nDetected language: {result.language} outside configured allow list ({allowed})."
         else:
