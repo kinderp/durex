@@ -47,6 +47,14 @@ class VoiceCommandTests(unittest.TestCase):
 
         self.assertEqual(command.action, "run")
 
+    def test_command_alias_maps_learned_phrase(self):
+        """Learned phrases should map to simple command actions."""
+
+        command = parse_voice_command("abbia walker", command_aliases={"abbia walker": "run"})
+
+        self.assertEqual(command.action, "run")
+        self.assertEqual(command.transcript, "abbia walker")
+
     def test_stop_english(self):
         """English stop commands should request cooperative worker stop."""
 

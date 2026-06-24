@@ -16,6 +16,7 @@ from typing import Optional
 
 DEFAULT_PRIORITY = 100
 DEFAULT_TASK_LIMIT = 10
+ALIASABLE_ACTIONS = frozenset({"status", "tasks", "tail", "run", "stop"})
 
 
 class VoiceCommandError(ValueError):
@@ -196,7 +197,11 @@ def extract_between_markers(text: str, start_markers: list[str], end_markers: li
     return None
 
 
-def parse_voice_command(transcript: str, workdir_aliases: Optional[dict[str, str]] = None) -> VoiceCommand:
+def parse_voice_command(
+    transcript: str,
+    workdir_aliases: Optional[dict[str, str]] = None,
+    command_aliases: Optional[dict[str, str]] = None,
+) -> VoiceCommand:
     """
     Parse Italian or English speech text into a Durex remote-control command.
 
@@ -205,6 +210,8 @@ def parse_voice_command(transcript: str, workdir_aliases: Optional[dict[str, str
             Speech-to-text transcript.
         workdir_aliases:
             Spoken workdir aliases, for example ``{"durex": "/lab/durex"}``.
+        command_aliases:
+            Normalized spoken phrases mapped to simple command actions.
 
     Returns:
         Structured VoiceCommand.
@@ -215,6 +222,11 @@ def parse_voice_command(transcript: str, workdir_aliases: Optional[dict[str, str
     """
 
     aliases = {normalize_transcript(key): value for key, value in (workdir_aliases or {}).items()}
+    command_aliases = {
+        normalize_transcript(phrase): action
+        for phrase, action in (command_aliases or {}).items()
+        if action in ALIASABLE_ACTIONS
+    }
     text = normalize_transcript(transcript)
     if not text:
         raise VoiceCommandError("Empty voice transcript.")
@@ -244,6 +256,10 @@ def parse_voice_command(transcript: str, workdir_aliases: Optional[dict[str, str
 
     if text.startswith(("add task", "aggiungi task", "aggiungi un task", "crea task")):
         return parse_add_voice_command(text, aliases)
+
+    alias_action = command_aliases.get(text)
+    if alias_action:
+        return VoiceCommand(action=alias_action, transcript=text)
 
     raise VoiceCommandError(f"Voice command not recognized: {transcript}")
 

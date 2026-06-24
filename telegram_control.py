@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import argparse
+import json
 import os
 from pathlib import Path
 import shlex
@@ -22,12 +23,29 @@ from typing import Callable, Optional
 
 import codex_queue
 from telegram_bridge import TelegramApprovalBridge, TelegramBridgeConfig, TelegramBridgeError
-from voice_commands import VoiceCommand, VoiceCommandError, parse_voice_command
+from voice_commands import ALIASABLE_ACTIONS, VoiceCommand, VoiceCommandError, normalize_transcript, parse_voice_command
 from voice_transcriber import VoiceTranscriber, VoiceTranscriptionError, build_voice_transcriber
 
 
 DEFAULT_TASK_LIMIT = 10
 MAX_TELEGRAM_MESSAGE_CHARS = 3900
+DEFAULT_VOICE_ALIASES_FILE = ".durex_voice_aliases.json"
+
+
+LEARN_ACTION_ALIASES = {
+    "status": "status",
+    "stato": "status",
+    "tasks": "tasks",
+    "task": "tasks",
+    "lista": "tasks",
+    "tail": "tail",
+    "output": "tail",
+    "run": "run",
+    "start": "run",
+    "avvia": "run",
+    "stop": "stop",
+    "ferma": "stop",
+}
 
 
 @dataclass(frozen=True)
@@ -95,6 +113,9 @@ class TelegramControlConfig:
     voice_language: Optional[str] = None
     voice_allowed_languages: tuple[str, ...] = ("it", "en")
     voice_workdir_aliases: dict[str, str] = field(default_factory=dict)
+    voice_command_aliases: dict[str, str] = field(default_factory=dict)
+    voice_aliases_file: str = DEFAULT_VOICE_ALIASES_FILE
+    voice_debug: bool = False
 
 
 @dataclass
@@ -379,6 +400,127 @@ def parse_workdir_aliases(value: Optional[str]) -> dict[str, str]:
     return aliases
 
 
+def normalize_learn_action(value: str) -> str:
+    """
+    Normalize a /learn action label to a safe voice command action.
+
+    Args:
+        value:
+            User-provided action label.
+
+    Returns:
+        Canonical action name.
+
+    Raises:
+        TelegramControlError:
+            Raised when the action cannot be learned safely.
+    """
+
+    action = LEARN_ACTION_ALIASES.get(normalize_transcript(value))
+    if action not in ALIASABLE_ACTIONS:
+        allowed = ", ".join(sorted(ALIASABLE_ACTIONS))
+        raise TelegramControlError(f"Unsupported learn action: {value}. Allowed: {allowed}")
+    return action
+
+
+def parse_learn_command(text: str) -> tuple[str, str]:
+    """
+    Parse a text /learn command.
+
+    Args:
+        text:
+            Full Telegram message text.
+
+    Returns:
+        Tuple of canonical action and spoken phrase.
+    """
+
+    parts = text.strip().split(maxsplit=2)
+    if len(parts) < 3 or base_command(parts[0]) != "/learn":
+        raise TelegramControlError("Usage: /learn <status|tasks|tail|run|stop> <spoken phrase>")
+
+    action = normalize_learn_action(parts[1])
+    phrase = normalize_transcript(parts[2])
+    if not phrase:
+        raise TelegramControlError("Missing spoken phrase for /learn.")
+    return action, phrase
+
+
+def load_voice_command_aliases(path: str) -> dict[str, str]:
+    """
+    Load voice command aliases from a JSON file.
+
+    Supported JSON shape:
+        ``{"run": ["abbia walker"], "tasks": ["lista tasche"]}``
+
+    Args:
+        path:
+            Alias JSON path.
+
+    Returns:
+        Mapping of normalized phrase to canonical action.
+    """
+
+    alias_path = Path(path).expanduser()
+    if not alias_path.exists():
+        return {}
+
+    try:
+        raw = json.loads(alias_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise TelegramControlError(f"Could not read voice aliases file {alias_path}: {exc}") from exc
+
+    aliases: dict[str, str] = {}
+    if isinstance(raw, dict):
+        for action, phrases in raw.items():
+            canonical = normalize_learn_action(str(action))
+            if isinstance(phrases, str):
+                phrases = [phrases]
+            if not isinstance(phrases, list):
+                continue
+            for phrase in phrases:
+                normalized = normalize_transcript(str(phrase))
+                if normalized:
+                    aliases[normalized] = canonical
+    return aliases
+
+
+def save_voice_command_alias(path: str, action: str, phrase: str) -> None:
+    """
+    Persist one learned voice command alias.
+
+    Args:
+        path:
+            Alias JSON path.
+        action:
+            Canonical action name.
+        phrase:
+            Normalized spoken phrase.
+    """
+
+    alias_path = Path(path).expanduser()
+    data: dict[str, list[str]] = {}
+    if alias_path.exists():
+        try:
+            raw = json.loads(alias_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise TelegramControlError(f"Could not read voice aliases file {alias_path}: {exc}") from exc
+        if isinstance(raw, dict):
+            for raw_action, phrases in raw.items():
+                canonical = normalize_learn_action(str(raw_action))
+                if isinstance(phrases, str):
+                    phrases = [phrases]
+                if isinstance(phrases, list):
+                    data[canonical] = [normalize_transcript(str(item)) for item in phrases if normalize_transcript(str(item))]
+
+    data.setdefault(action, [])
+    if phrase not in data[action]:
+        data[action].append(phrase)
+
+    alias_path.parent.mkdir(parents=True, exist_ok=True)
+    alias_path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
 def task_counts() -> dict[str, int]:
     """
     Return task counts by status.
@@ -577,6 +719,9 @@ class TelegramControlBot:
             voice_language=config.voice_language,
             voice_allowed_languages=config.voice_allowed_languages,
             voice_workdir_aliases=config.voice_workdir_aliases,
+            voice_command_aliases=config.voice_command_aliases,
+            voice_aliases_file=config.voice_aliases_file,
+            voice_debug=config.voice_debug,
         )
         self.voice_transcriber = voice_transcriber
         self.worker_state = WorkerState()
@@ -639,6 +784,9 @@ class TelegramControlBot:
         voice_language = None if voice_language_env in {"", "auto"} else voice_language_env
         voice_allowed_languages = parse_csv_env(os.environ.get("DUREX_VOICE_ALLOWED_LANGUAGES"), ("it", "en"))
         voice_workdir_aliases = parse_workdir_aliases(os.environ.get("DUREX_VOICE_WORKDIR_ALIASES"))
+        voice_aliases_file = os.environ.get("DUREX_VOICE_ALIASES_FILE", DEFAULT_VOICE_ALIASES_FILE)
+        voice_debug = parse_bool_env(os.environ.get("DUREX_VOICE_DEBUG"))
+        voice_command_aliases = load_voice_command_aliases(voice_aliases_file)
 
         bridge = TelegramApprovalBridge(
             TelegramBridgeConfig(bot_token=token, allowed_chat_id=int(chat_id))
@@ -661,6 +809,9 @@ class TelegramControlBot:
                 voice_language=voice_language,
                 voice_allowed_languages=voice_allowed_languages,
                 voice_workdir_aliases=voice_workdir_aliases,
+                voice_command_aliases=voice_command_aliases,
+                voice_aliases_file=voice_aliases_file,
+                voice_debug=voice_debug,
             ),
             voice_transcriber=voice_transcriber,
         )
@@ -826,6 +977,12 @@ class TelegramControlBot:
                 max_attempts=add.max_attempts,
             )
 
+        if command == "/learn":
+            action, phrase = parse_learn_command(stripped)
+            save_voice_command_alias(self.config.voice_aliases_file, action, phrase)
+            self.config.voice_command_aliases[phrase] = action
+            return f"Learned voice alias: '{phrase}' -> {action}"
+
         if command == "/run" and len(parts) == 1:
             return self.start_worker()
 
@@ -858,7 +1015,7 @@ class TelegramControlBot:
         destination = Path(tempfile.gettempdir()) / "durex_voice" / f"{file_id}{suffix}"
         return self.bridge.download_file(str(file_path), str(destination))
 
-    def transcribe_voice_command(self, audio_path: str) -> tuple[str, VoiceCommand, Optional[str]]:
+    def transcribe_voice_command(self, audio_path: str) -> tuple[str, VoiceCommand, Optional[str], list[str]]:
         """
         Transcribe audio and parse it into a voice command.
 
@@ -871,7 +1028,8 @@ class TelegramControlBot:
                 Local voice attachment path.
 
         Returns:
-            Tuple of transcript, parsed command, and detected language.
+            Tuple of transcript, parsed command, detected language, and
+            transcription attempt details.
         """
 
         languages: list[Optional[str]]
@@ -889,8 +1047,13 @@ class TelegramControlBot:
                 attempts.append(f"{language or 'auto'}: empty transcript")
                 continue
             try:
-                command = parse_voice_command(transcript, workdir_aliases=self.config.voice_workdir_aliases)
-                return transcript, command, detected
+                command = parse_voice_command(
+                    transcript,
+                    workdir_aliases=self.config.voice_workdir_aliases,
+                    command_aliases=self.config.voice_command_aliases,
+                )
+                attempts.append(f"{language or 'auto'}: {transcript} -> {command.action}")
+                return transcript, command, detected, attempts
             except VoiceCommandError:
                 attempts.append(f"{language or 'auto'}: {transcript} (detected {detected})")
 
@@ -900,15 +1063,24 @@ class TelegramControlBot:
             transcript = result.text.strip()
             if transcript:
                 try:
-                    command = parse_voice_command(transcript, workdir_aliases=self.config.voice_workdir_aliases)
-                    return transcript, command, detected
+                    command = parse_voice_command(
+                        transcript,
+                        workdir_aliases=self.config.voice_workdir_aliases,
+                        command_aliases=self.config.voice_command_aliases,
+                    )
+                    attempts.append(f"auto: {transcript} -> {command.action}")
+                    return transcript, command, detected, attempts
                 except VoiceCommandError:
                     attempts.append(f"auto: {transcript} (detected {detected})")
             else:
                 attempts.append("auto: empty transcript")
 
         if attempts:
-            raise TelegramControlError("Voice command not recognized after transcription attempts: " + "; ".join(attempts))
+            raise TelegramControlError(
+                "Voice command not recognized after transcription attempts: "
+                + "; ".join(attempts)
+                + ". To learn one transcript, send /learn <status|tasks|tail|run|stop> <phrase>."
+            )
         raise TelegramControlError("Voice transcription returned empty text.")
 
     def handle_voice(self, voice: dict) -> str:
@@ -929,7 +1101,7 @@ class TelegramControlBot:
             raise TelegramControlError("Voice transcription is not configured.")
 
         audio_path = self.download_voice_message(voice)
-        transcript, command, detected_language = self.transcribe_voice_command(audio_path)
+        transcript, command, detected_language, attempts = self.transcribe_voice_command(audio_path)
 
         if (
             self.config.voice_language is None
@@ -942,7 +1114,10 @@ class TelegramControlBot:
             language_note = ""
 
         response = self.handle_voice_command(command)
-        return f"Voice transcript: {transcript}{language_note}\n\n{response}"
+        debug_note = ""
+        if self.config.voice_debug:
+            debug_note = "\nVoice attempts:\n" + "\n".join(attempts)
+        return f"Voice transcript: {transcript}{language_note}{debug_note}\n\n{response}"
 
     def handle_update(self, update: dict) -> Optional[str]:
         """
@@ -1020,6 +1195,7 @@ Prompt text for Codex...
 /run - start the Durex worker until the queue is empty
 /tail [task_id] - show task output tail
 /stop - stop worker before the next task starts
+/learn <status|tasks|tail|run|stop> <spoken phrase> - save a voice alias
 
 Voice commands are supported when DUREX_VOICE_ENABLED=1.
 Remote control does not execute shell input directly."""

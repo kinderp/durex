@@ -58,6 +58,7 @@ export DUREX_VOICE_PROVIDER=faster_whisper
 export DUREX_VOICE_MODEL=base
 export DUREX_VOICE_LANGUAGE=auto
 export DUREX_VOICE_ALLOWED_LANGUAGES=it,en
+export DUREX_VOICE_ALIASES_FILE=.durex_voice_aliases.json
 ```
 
 With `DUREX_VOICE_LANGUAGE=auto`, Durex probes the allowed languages
@@ -188,6 +189,59 @@ English:
 
 ```text
 stop worker
+```
+
+## Voice Calibration
+
+Short operational commands can be misheard by the local speech-to-text model.
+For example, `avvia worker` may become `abbia walker`.
+
+Use debug mode while calibrating:
+
+```bash
+export DUREX_VOICE_DEBUG=1
+```
+
+When a voice command fails, Durex replies with the transcripts tried for each
+language, for example:
+
+```text
+Command rejected: Voice command not recognized after transcription attempts:
+it: abbia walker (detected it); en: ...
+```
+
+Teach Durex the phrase with a text command:
+
+```text
+/learn run abbia walker
+```
+
+After that, sending a voice message that transcribes as `abbia walker` will run
+the same safe action as `avvia worker`.
+
+Learned aliases can target only simple remote-control actions:
+
+```text
+status
+tasks
+tail
+run
+stop
+```
+
+They cannot target `add`, because task creation needs structured fields such as
+title, workdir, priority, and prompt.
+
+Aliases are stored locally in:
+
+```bash
+.durex_voice_aliases.json
+```
+
+You can choose another path:
+
+```bash
+export DUREX_VOICE_ALIASES_FILE=/path/to/voice_aliases.json
 ```
 
 ## First Smoke Test

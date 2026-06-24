@@ -550,6 +550,7 @@ export DUREX_VOICE_ENABLED=1
 export DUREX_VOICE_MODEL=base
 export DUREX_VOICE_ALLOWED_LANGUAGES=it,en
 export DUREX_VOICE_WORKDIR_ALIASES="durex=/lab/durex"
+export DUREX_VOICE_DEBUG=1
 
 python3 codex_queue.py telegram-control --allowed-workdir /lab/durex
 ```
@@ -567,6 +568,13 @@ add task title smoke test directory durex priority one prompt read the readme
 ```
 
 Details: [TELEGRAM_VOICE_COMMANDS.md](TELEGRAM_VOICE_COMMANDS.md)
+
+If a short command is misheard, use `/learn` from Telegram to map the transcript
+to a safe action:
+
+```text
+/learn run abbia walker
+```
 
 ### First remote-control smoke test
 

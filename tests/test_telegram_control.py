@@ -314,6 +314,48 @@ class TelegramControlTests(unittest.TestCase):
         self.assertEqual(row[2], str(Path(self.tmp.name).resolve()))
         self.assertEqual(row[3], 1)
 
+    def test_learn_command_persists_voice_alias(self):
+        """Text /learn should save a safe voice alias and activate it immediately."""
+
+        alias_file = str(Path(self.tmp.name) / "voice_aliases.json")
+        bridge = FakeBridge(chat_id=123)
+        bot = TelegramControlBot(
+            bridge=bridge,
+            config=TelegramControlConfig(
+                allowed_workdirs=[self.tmp.name],
+                voice_enabled=True,
+                voice_aliases_file=alias_file,
+            ),
+            voice_transcriber=StaticVoiceTranscriber("abbia walker", language="it"),
+        )
+
+        learn_response = bot.handle_update(
+            {"message": {"chat": {"id": 123}, "text": "/learn run abbia walker"}}
+        )
+        voice_response = bot.handle_update(
+            {"message": {"chat": {"id": 123}, "voice": {"file_id": "voice-learned"}}}
+        )
+
+        self.assertEqual(learn_response, "Learned voice alias: 'abbia walker' -> run")
+        self.assertIn("Worker started.", voice_response)
+        self.assertIn('"run"', Path(alias_file).read_text(encoding="utf-8"))
+        self.assertIn("abbia walker", Path(alias_file).read_text(encoding="utf-8"))
+
+    def test_learn_command_rejects_add_alias(self):
+        """Learned aliases should not target structured add commands."""
+
+        bridge = FakeBridge(chat_id=123)
+        bot = TelegramControlBot(
+            bridge=bridge,
+            config=TelegramControlConfig(allowed_workdirs=[self.tmp.name]),
+        )
+
+        response = bot.handle_update(
+            {"message": {"chat": {"id": 123}, "text": "/learn add crea roba"}}
+        )
+
+        self.assertIn("Unsupported learn action", response)
+
     def test_voice_message_reports_unrecognized_transcript_with_detected_language(self):
         """Unrecognized transcripts should report the text instead of failing on language first."""
 
@@ -393,6 +435,37 @@ class TelegramControlTests(unittest.TestCase):
         self.assertIn("Voice transcript: lista task", response)
         self.assertIn("No tasks found.", response)
         self.assertEqual(transcriber.calls, ["it", "en"])
+
+    def test_voice_debug_includes_transcription_attempts(self):
+        """Debug mode should expose the transcripts tried by language."""
+
+        bridge = FakeBridge(chat_id=123)
+        transcriber = MappingVoiceTranscriber(
+            {
+                "it": ("qualcosa non valido", "it"),
+                "en": ("status", "en"),
+                None: ("status", "en"),
+            }
+        )
+        bot = TelegramControlBot(
+            bridge=bridge,
+            config=TelegramControlConfig(
+                allowed_workdirs=[self.tmp.name],
+                voice_enabled=True,
+                voice_allowed_languages=("it", "en"),
+                voice_debug=True,
+            ),
+            voice_transcriber=transcriber,
+        )
+
+        response = bot.handle_update(
+            {"message": {"chat": {"id": 123}, "voice": {"file_id": "voice-debug"}}}
+        )
+
+        self.assertIn("Voice attempts:", response)
+        self.assertIn("it: qualcosa non valido", response)
+        self.assertIn("en: status -> status", response)
+        self.assertIn("Durex status", response)
 
     def test_worker_telegram_approvals_are_rejected_for_control_mode(self):
         """Control mode must reject competing Telegram getUpdates consumers."""

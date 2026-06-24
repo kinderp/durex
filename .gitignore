@@ -3,3 +3,4 @@ tests/__pycache__/
 docs/_build/
 .venv/
 .DS_Store
+.durex_voice_aliases.json
