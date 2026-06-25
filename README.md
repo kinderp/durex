@@ -84,6 +84,7 @@ input back to Codex.
 
 More diagrams are available in:
 
+- [`docs/FIRST_RUN_TELEGRAM_GUIDE.md`](docs/FIRST_RUN_TELEGRAM_GUIDE.md)
 - [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md)
 - [`docs/SYSTEM_OVERVIEW.md`](docs/SYSTEM_OVERVIEW.md)
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
@@ -154,6 +155,7 @@ python3 -m venv .venv
 └── docs/
     ├── ARCHITECTURE.md
     ├── CONFIGURATION.md
+    ├── FIRST_RUN_TELEGRAM_GUIDE.md
     ├── PTY_VS_EVENTS.md
     ├── ROADMAP.md
     ├── SESSION_APPROVAL_DEDUP.md

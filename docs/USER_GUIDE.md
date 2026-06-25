@@ -4,6 +4,10 @@ This guide explains how to use Durex from the command line.
 
 It is written for someone who wants to run real work, not only understand the
 architecture. For system internals, start from [SYSTEM_OVERVIEW.md](SYSTEM_OVERVIEW.md).
+For a complete first setup path covering Telegram bot creation, chat-id
+discovery, YAML configuration, text commands, voice commands, and first mobile
+smoke tests, start from
+[FIRST_RUN_TELEGRAM_GUIDE.md](FIRST_RUN_TELEGRAM_GUIDE.md).
 
 ---
 
