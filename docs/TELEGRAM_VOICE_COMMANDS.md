@@ -203,21 +203,24 @@ export DUREX_VOICE_DEBUG=1
 ```
 
 When a voice command fails, Durex replies with the transcripts tried for each
-language, for example:
+language and shows inline Learn buttons for the best candidate:
 
 ```text
 Command rejected: Voice command not recognized after transcription attempts:
 it: abbia walker (detected it); en: ...
+
+Learn candidate: abbia walker
 ```
 
-Teach Durex the phrase with a text command:
+Tap the matching button, for example `Learn Run`, and Durex stores the alias
+locally. After that, sending a voice message that transcribes as `abbia walker`
+will run the same safe action as `avvia worker`.
+
+You can also teach Durex with a text command:
 
 ```text
 /learn run abbia walker
 ```
-
-After that, sending a voice message that transcribes as `abbia walker` will run
-the same safe action as `avvia worker`.
 
 Learned aliases can target only simple remote-control actions:
 

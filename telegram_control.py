@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import argparse
+import secrets
 import json
 import os
 from pathlib import Path
@@ -153,6 +154,19 @@ class WorkerState:
 
 class TelegramControlError(ValueError):
     """Raised when a remote command is invalid or not allowed."""
+
+
+class VoiceCommandNotRecognized(TelegramControlError):
+    """Raised when voice transcription produced no recognized command."""
+
+    def __init__(self, attempts: list[str], candidates: list[str]) -> None:
+        self.attempts = attempts
+        self.candidates = candidates
+        super().__init__(
+            "Voice command not recognized after transcription attempts: "
+            + "; ".join(attempts)
+            + ". Tap a Learn button to map one transcript to a safe action."
+        )
 
 
 class TelegramArgumentParser(argparse.ArgumentParser):
@@ -521,6 +535,28 @@ def save_voice_command_alias(path: str, action: str, phrase: str) -> None:
     alias_path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
+def unique_normalized_phrases(values: list[str]) -> list[str]:
+    """
+    Return unique normalized non-empty phrases preserving order.
+
+    Args:
+        values:
+            Candidate transcript strings.
+
+    Returns:
+        Deduplicated normalized phrases.
+    """
+
+    phrases: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        phrase = normalize_transcript(value)
+        if phrase and phrase not in seen:
+            seen.add(phrase)
+            phrases.append(phrase)
+    return phrases
+
+
 def task_counts() -> dict[str, int]:
     """
     Return task counts by status.
@@ -725,6 +761,7 @@ class TelegramControlBot:
         )
         self.voice_transcriber = voice_transcriber
         self.worker_state = WorkerState()
+        self.pending_voice_learns: dict[str, str] = {}
 
     @classmethod
     def from_env(
@@ -816,19 +853,51 @@ class TelegramControlBot:
             voice_transcriber=voice_transcriber,
         )
 
-    def send(self, text: str) -> None:
+    def send(self, text: str, reply_markup: Optional[dict] = None) -> None:
         """
         Send one control message to Telegram.
 
         Args:
             text:
                 Response text produced by command handling.
+            reply_markup:
+                Optional Telegram inline keyboard payload.
 
         Returns:
             None.
         """
 
-        self.bridge.send_message(truncate_message(text))
+        self.bridge.send_message(truncate_message(text), reply_markup=reply_markup)
+
+    def build_voice_learn_keyboard(self, phrase: str) -> dict:
+        """
+        Build an inline keyboard for learning one transcript candidate.
+
+        Args:
+            phrase:
+                Normalized transcript candidate.
+
+        Returns:
+            Telegram inline keyboard reply markup.
+        """
+
+        token = secrets.token_urlsafe(8)
+        self.pending_voice_learns[token] = phrase
+        return {
+            "inline_keyboard": [
+                [
+                    {"text": "Learn Status", "callback_data": f"durexlearn:{token}:status"},
+                    {"text": "Learn Tasks", "callback_data": f"durexlearn:{token}:tasks"},
+                ],
+                [
+                    {"text": "Learn Tail", "callback_data": f"durexlearn:{token}:tail"},
+                    {"text": "Learn Run", "callback_data": f"durexlearn:{token}:run"},
+                ],
+                [
+                    {"text": "Learn Stop", "callback_data": f"durexlearn:{token}:stop"},
+                ],
+            ]
+        }
 
     def start_worker(self) -> str:
         """
@@ -991,6 +1060,46 @@ class TelegramControlBot:
 
         return "Unknown command. Send /help."
 
+    def handle_learn_callback(self, callback: dict) -> Optional[str]:
+        """
+        Handle one inline Learn callback.
+
+        Args:
+            callback:
+                Telegram callback_query payload.
+
+        Returns:
+            Response text when handled, otherwise None.
+        """
+
+        message = callback.get("message", {})
+        chat = message.get("chat", {}) if isinstance(message, dict) else {}
+        try:
+            chat_id = int(chat.get("id", 0))
+        except (TypeError, ValueError):
+            return None
+        if chat_id != self.bridge.config.allowed_chat_id:
+            return None
+
+        data = str(callback.get("data", ""))
+        parts = data.split(":")
+        if len(parts) != 3 or parts[0] != "durexlearn":
+            return None
+
+        token = parts[1]
+        action = normalize_learn_action(parts[2])
+        phrase = self.pending_voice_learns.pop(token, None)
+        if not phrase:
+            raise TelegramControlError("Learn candidate expired. Send the voice command again.")
+
+        save_voice_command_alias(self.config.voice_aliases_file, action, phrase)
+        self.config.voice_command_aliases[phrase] = action
+
+        callback_id = callback.get("id")
+        if callback_id and hasattr(self.bridge, "answer_callback_query"):
+            self.bridge.answer_callback_query(str(callback_id), text="Learned")
+        return f"Learned voice alias: '{phrase}' -> {action}"
+
     def download_voice_message(self, voice: dict) -> str:
         """
         Download a Telegram voice attachment to a temporary file.
@@ -1039,6 +1148,7 @@ class TelegramControlBot:
             languages = [self.config.voice_language]
 
         attempts: list[str] = []
+        candidates: list[str] = []
         for language in languages:
             result = self.voice_transcriber.transcribe(audio_path, language=language)
             detected = result.language or language or "unknown"
@@ -1046,6 +1156,7 @@ class TelegramControlBot:
             if not transcript:
                 attempts.append(f"{language or 'auto'}: empty transcript")
                 continue
+            candidates.append(transcript)
             try:
                 command = parse_voice_command(
                     transcript,
@@ -1062,6 +1173,7 @@ class TelegramControlBot:
             detected = result.language or "unknown"
             transcript = result.text.strip()
             if transcript:
+                candidates.append(transcript)
                 try:
                     command = parse_voice_command(
                         transcript,
@@ -1076,11 +1188,7 @@ class TelegramControlBot:
                 attempts.append("auto: empty transcript")
 
         if attempts:
-            raise TelegramControlError(
-                "Voice command not recognized after transcription attempts: "
-                + "; ".join(attempts)
-                + ". To learn one transcript, send /learn <status|tasks|tail|run|stop> <phrase>."
-            )
+            raise VoiceCommandNotRecognized(attempts=attempts, candidates=unique_normalized_phrases(candidates))
         raise TelegramControlError("Voice transcription returned empty text.")
 
     def handle_voice(self, voice: dict) -> str:
@@ -1131,6 +1239,16 @@ class TelegramControlBot:
             Response text for handled authorized messages, otherwise None.
         """
 
+        callback = update.get("callback_query")
+        if callback:
+            try:
+                response = self.handle_learn_callback(callback)
+            except (TelegramControlError, ValueError, sqlite3.Error) as exc:
+                response = f"Command rejected: {exc}"
+            if response:
+                self.send(response)
+            return response
+
         message = update.get("message")
         if not message:
             return None
@@ -1154,6 +1272,14 @@ class TelegramControlBot:
                 response = self.handle_text(text)
             else:
                 response = self.handle_voice(voice)
+        except VoiceCommandNotRecognized as exc:
+            response = f"Command rejected: {exc}"
+            candidates = exc.candidates
+            reply_markup = self.build_voice_learn_keyboard(candidates[0]) if candidates else None
+            if candidates:
+                response += f"\n\nLearn candidate: {candidates[0]}"
+            self.send(response, reply_markup=reply_markup)
+            return response
         except (TelegramControlError, VoiceCommandError, VoiceTranscriptionError, ValueError, sqlite3.Error) as exc:
             response = f"Command rejected: {exc}"
 
@@ -1174,7 +1300,7 @@ class TelegramControlBot:
             try:
                 updates = self.bridge.poll_updates(
                     timeout=self.config.poll_timeout_seconds,
-                    allowed_updates=["message"],
+                    allowed_updates=["message", "callback_query"],
                 )
                 retry_delay = self.config.retry_base_seconds
                 for update in updates:

@@ -569,8 +569,9 @@ add task title smoke test directory durex priority one prompt read the readme
 
 Details: [TELEGRAM_VOICE_COMMANDS.md](TELEGRAM_VOICE_COMMANDS.md)
 
-If a short command is misheard, use `/learn` from Telegram to map the transcript
-to a safe action:
+If a short command is misheard, Durex shows Learn buttons for the transcript
+candidate. Tap the action button, or use `/learn` from Telegram to map it
+manually:
 
 ```text
 /learn run abbia walker

@@ -28,12 +28,20 @@ class FakeBridge:
 
         self.config = TelegramBridgeConfig(bot_token="fake", allowed_chat_id=chat_id)
         self.messages = []
+        self.reply_markups = []
+        self.callback_answers = []
 
     def send_message(self, text, reply_markup=None):
         """Record outgoing messages and return a deterministic message id."""
 
         self.messages.append(text)
+        self.reply_markups.append(reply_markup)
         return len(self.messages)
+
+    def answer_callback_query(self, callback_query_id, text=None):
+        """Record callback acknowledgements."""
+
+        self.callback_answers.append((callback_query_id, text))
 
     def get_file(self, file_id):
         """Return deterministic fake Telegram file metadata."""
@@ -355,6 +363,44 @@ class TelegramControlTests(unittest.TestCase):
         )
 
         self.assertIn("Unsupported learn action", response)
+
+    def test_failed_voice_command_can_be_learned_with_inline_button(self):
+        """Voice failures should offer inline buttons that save the selected alias."""
+
+        alias_file = str(Path(self.tmp.name) / "voice_aliases.json")
+        bridge = FakeBridge(chat_id=123)
+        bot = TelegramControlBot(
+            bridge=bridge,
+            config=TelegramControlConfig(
+                allowed_workdirs=[self.tmp.name],
+                voice_enabled=True,
+                voice_aliases_file=alias_file,
+            ),
+            voice_transcriber=StaticVoiceTranscriber("abbia walker", language="it"),
+        )
+
+        failed_response = bot.handle_update(
+            {"message": {"chat": {"id": 123}, "voice": {"file_id": "voice-learn-button"}}}
+        )
+        keyboard = bridge.reply_markups[-1]
+        run_callback = keyboard["inline_keyboard"][1][1]["callback_data"]
+        learn_response = bot.handle_update(
+            {
+                "callback_query": {
+                    "id": "callback-1",
+                    "message": {"chat": {"id": 123}},
+                    "data": run_callback,
+                }
+            }
+        )
+        voice_response = bot.handle_update(
+            {"message": {"chat": {"id": 123}, "voice": {"file_id": "voice-learned-button"}}}
+        )
+
+        self.assertIn("Learn candidate: abbia walker", failed_response)
+        self.assertIn("Learned voice alias: 'abbia walker' -> run", learn_response)
+        self.assertIn("Worker started.", voice_response)
+        self.assertEqual(bridge.callback_answers, [("callback-1", "Learned")])
 
     def test_voice_message_reports_unrecognized_transcript_with_detected_language(self):
         """Unrecognized transcripts should report the text instead of failing on language first."""
