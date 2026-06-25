@@ -338,15 +338,15 @@ class TelegramControlTests(unittest.TestCase):
         )
 
         learn_response = bot.handle_update(
-            {"message": {"chat": {"id": 123}, "text": "/learn run abbia walker"}}
+            {"message": {"chat": {"id": 123}, "text": "/learn status abbia walker"}}
         )
         voice_response = bot.handle_update(
             {"message": {"chat": {"id": 123}, "voice": {"file_id": "voice-learned"}}}
         )
 
-        self.assertEqual(learn_response, "Learned voice alias: 'abbia walker' -> run")
-        self.assertIn("Worker started.", voice_response)
-        self.assertIn('"run"', Path(alias_file).read_text(encoding="utf-8"))
+        self.assertEqual(learn_response, "Learned voice alias: 'abbia walker' -> status")
+        self.assertIn("Durex status", voice_response)
+        self.assertIn('"status"', Path(alias_file).read_text(encoding="utf-8"))
         self.assertIn("abbia walker", Path(alias_file).read_text(encoding="utf-8"))
 
     def test_learn_command_rejects_add_alias(self):
@@ -363,6 +363,239 @@ class TelegramControlTests(unittest.TestCase):
         )
 
         self.assertIn("Unsupported learn action", response)
+
+    def test_tasks_command_sends_task_buttons_and_detail_callback(self):
+        """Task list should expose inline buttons for task details."""
+
+        codex_queue.init_db()
+        codex_queue.add_task(
+            title="Button task",
+            prompt="Do work",
+            workdir=self.tmp.name,
+            priority=10,
+        )
+        bridge = FakeBridge(chat_id=123)
+        bot = TelegramControlBot(
+            bridge=bridge,
+            config=TelegramControlConfig(allowed_workdirs=[self.tmp.name]),
+        )
+
+        response = bot.handle_update({"message": {"chat": {"id": 123}, "text": "/tasks"}})
+        keyboard = bridge.reply_markups[-1]
+        detail_callback = keyboard["inline_keyboard"][0][0]["callback_data"]
+        detail_response = bot.handle_update(
+            {
+                "callback_query": {
+                    "id": "callback-detail",
+                    "message": {"chat": {"id": 123}},
+                    "data": detail_callback,
+                }
+            }
+        )
+
+        self.assertIn("Button task", response)
+        self.assertEqual(detail_callback, "durextask:1:details")
+        self.assertIn("Task #1", detail_response)
+        self.assertIn("Title: Button task", detail_response)
+        self.assertEqual(bridge.callback_answers[-1], ("callback-detail", "Task #1"))
+        self.assertIsNotNone(bridge.reply_markups[-1])
+
+    def test_task_tail_callback_returns_output(self):
+        """Task detail tail button should return task output."""
+
+        codex_queue.init_db()
+        codex_queue.add_task(
+            title="Output task",
+            prompt="Do work",
+            workdir=self.tmp.name,
+            priority=10,
+        )
+        with codex_queue.connect() as con:
+            con.execute("UPDATE tasks SET output = ? WHERE id = 1", ("hello output",))
+        bridge = FakeBridge(chat_id=123)
+        bot = TelegramControlBot(
+            bridge=bridge,
+            config=TelegramControlConfig(allowed_workdirs=[self.tmp.name]),
+        )
+
+        response = bot.handle_update(
+            {
+                "callback_query": {
+                    "id": "callback-tail",
+                    "message": {"chat": {"id": 123}},
+                    "data": "durextask:1:tail",
+                }
+            }
+        )
+
+        self.assertIn("hello output", response)
+        self.assertEqual(bridge.callback_answers[-1], ("callback-tail", "Output"))
+
+    def test_add_wizard_creates_task_with_buttons_and_text_prompt(self):
+        """Guided add wizard should create a task without a complex voice command."""
+
+        bridge = FakeBridge(chat_id=123)
+        bot = TelegramControlBot(
+            bridge=bridge,
+            config=TelegramControlConfig(
+                allowed_workdirs=[self.tmp.name],
+                workdir_choices={"temp": self.tmp.name},
+            ),
+        )
+
+        start_response = bot.handle_update({"message": {"chat": {"id": 123}, "text": "/add-wizard"}})
+        workdir_callback = bridge.reply_markups[-1]["inline_keyboard"][0][0]["callback_data"]
+        priority_response = bot.handle_update(
+            {
+                "callback_query": {
+                    "id": "callback-workdir",
+                    "message": {"chat": {"id": 123}},
+                    "data": workdir_callback,
+                }
+            }
+        )
+        token = workdir_callback.split(":")[1]
+        preset_response = bot.handle_update(
+            {
+                "callback_query": {
+                    "id": "callback-preset",
+                    "message": {"chat": {"id": 123}},
+                    "data": f"durexadd:{token}:preset:10",
+                }
+            }
+        )
+        increment_response = bot.handle_update(
+            {
+                "callback_query": {
+                    "id": "callback-inc",
+                    "message": {"chat": {"id": 123}},
+                    "data": f"durexadd:{token}:inc:5",
+                }
+            }
+        )
+        prompt_request = bot.handle_update(
+            {
+                "callback_query": {
+                    "id": "callback-prompt",
+                    "message": {"chat": {"id": 123}},
+                    "data": f"durexadd:{token}:prompt",
+                }
+            }
+        )
+        confirm_response = bot.handle_update(
+            {"message": {"chat": {"id": 123}, "text": "Read the README and summarize Durex."}}
+        )
+        create_response = bot.handle_update(
+            {
+                "callback_query": {
+                    "id": "callback-create",
+                    "message": {"chat": {"id": 123}},
+                    "data": f"durexadd:{token}:create",
+                }
+            }
+        )
+
+        self.assertEqual(start_response, "New task: choose workdir.")
+        self.assertIn("Current priority: 100", priority_response)
+        self.assertIn("Current priority: 10", preset_response)
+        self.assertIn("Current priority: 15", increment_response)
+        self.assertEqual(prompt_request, "Send the task prompt as a text message or voice message.")
+        self.assertIn("Create task?", confirm_response)
+        self.assertEqual(create_response, "Task added: Read the README and summarize Durex.")
+        with codex_queue.connect() as con:
+            row = con.execute("SELECT title, prompt, workdir, priority FROM tasks").fetchone()
+        self.assertEqual(row[0], "Read the README and summarize Durex.")
+        self.assertEqual(row[1], "Read the README and summarize Durex.")
+        self.assertEqual(row[2], str(Path(self.tmp.name).resolve()))
+        self.assertEqual(row[3], 15)
+
+    def test_add_wizard_accepts_voice_prompt(self):
+        """Guided add wizard should accept a voice message as the task prompt."""
+
+        bridge = FakeBridge(chat_id=123)
+        bot = TelegramControlBot(
+            bridge=bridge,
+            config=TelegramControlConfig(
+                allowed_workdirs=[self.tmp.name],
+                voice_enabled=True,
+                workdir_choices={"temp": self.tmp.name},
+            ),
+            voice_transcriber=StaticVoiceTranscriber("leggi il readme", language="it"),
+        )
+
+        bot.handle_update({"message": {"chat": {"id": 123}, "text": "/add-wizard"}})
+        workdir_callback = bridge.reply_markups[-1]["inline_keyboard"][0][0]["callback_data"]
+        token = workdir_callback.split(":")[1]
+        bot.handle_update(
+            {"callback_query": {"id": "callback-workdir", "message": {"chat": {"id": 123}}, "data": workdir_callback}}
+        )
+        bot.handle_update(
+            {"callback_query": {"id": "callback-prompt", "message": {"chat": {"id": 123}}, "data": f"durexadd:{token}:prompt"}}
+        )
+        confirm_response = bot.handle_update(
+            {"message": {"chat": {"id": 123}, "voice": {"file_id": "voice-prompt"}}}
+        )
+
+        self.assertIn("Prompt: leggi il readme", confirm_response)
+
+    def test_config_view_toggles_voice_debug(self):
+        """Config view should expose checkbox-style toggles."""
+
+        bridge = FakeBridge(chat_id=123)
+        bot = TelegramControlBot(
+            bridge=bridge,
+            config=TelegramControlConfig(allowed_workdirs=[self.tmp.name], voice_debug=False),
+        )
+
+        response = bot.handle_update({"message": {"chat": {"id": 123}, "text": "/config"}})
+        callback = bridge.reply_markups[-1]["inline_keyboard"][0][0]["callback_data"]
+        toggled = bot.handle_update(
+            {
+                "callback_query": {
+                    "id": "callback-config",
+                    "message": {"chat": {"id": 123}},
+                    "data": callback,
+                }
+            }
+        )
+
+        self.assertEqual(response, "Durex config")
+        self.assertIn("Voice debug: ON", bridge.reply_markups[-1]["inline_keyboard"][0][0]["text"])
+        self.assertEqual(toggled, "Durex config")
+        self.assertTrue(bot.config.voice_debug)
+
+    def test_from_env_loads_configured_workdir_choices(self):
+        """telegram-control should read workdir choices from YAML config."""
+
+        config_path = Path(self.tmp.name) / "config.yaml"
+        config_path.write_text(
+            "\n".join(
+                [
+                    "telegram_control:",
+                    "  allowed_workdirs:",
+                    f"    - {self.tmp.name}",
+                    "  workdir_choices:",
+                    f"    temp: {self.tmp.name}",
+                    "  voice:",
+                    "    enabled: false",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "DUREX_TELEGRAM_BOT_TOKEN": "token",
+                "DUREX_TELEGRAM_CHAT_ID": "123",
+                "DUREX_CONFIG": str(config_path),
+            },
+            clear=True,
+        ):
+            bot = TelegramControlBot.from_env()
+
+        self.assertEqual(bot.config.allowed_workdirs, [str(Path(self.tmp.name).resolve())])
+        self.assertEqual(bot.config.workdir_choices, {"temp": str(Path(self.tmp.name).resolve())})
 
     def test_failed_voice_command_can_be_learned_with_inline_button(self):
         """Voice failures should offer inline buttons that save the selected alias."""
@@ -383,13 +616,13 @@ class TelegramControlTests(unittest.TestCase):
             {"message": {"chat": {"id": 123}, "voice": {"file_id": "voice-learn-button"}}}
         )
         keyboard = bridge.reply_markups[-1]
-        run_callback = keyboard["inline_keyboard"][1][1]["callback_data"]
+        status_callback = keyboard["inline_keyboard"][0][0]["callback_data"]
         learn_response = bot.handle_update(
             {
                 "callback_query": {
                     "id": "callback-1",
                     "message": {"chat": {"id": 123}},
-                    "data": run_callback,
+                    "data": status_callback,
                 }
             }
         )
@@ -398,8 +631,8 @@ class TelegramControlTests(unittest.TestCase):
         )
 
         self.assertIn("Learn candidate: abbia walker", failed_response)
-        self.assertIn("Learned voice alias: 'abbia walker' -> run", learn_response)
-        self.assertIn("Worker started.", voice_response)
+        self.assertIn("Learned voice alias: 'abbia walker' -> status", learn_response)
+        self.assertIn("Durex status", voice_response)
         self.assertEqual(bridge.callback_answers, [("callback-1", "Learned")])
 
     def test_voice_message_reports_unrecognized_transcript_with_detected_language(self):

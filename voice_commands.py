@@ -30,8 +30,8 @@ class VoiceCommand:
 
     Attributes:
         action:
-            One of ``status``, ``tasks``, ``tail``, ``add``, ``run`` or
-            ``stop``.
+            One of ``status``, ``tasks``, ``tail``, ``add``, ``add_wizard``,
+            ``run`` or ``stop``.
         title:
             Task title for ``add``.
         workdir:
@@ -253,6 +253,9 @@ def parse_voice_command(
 
     if text in {"stop", "stop worker", "ferma", "ferma worker", "fermati"}:
         return VoiceCommand(action="stop", transcript=text)
+
+    if text in {"add task", "new task", "aggiungi task", "aggiungi un task", "crea task"}:
+        return VoiceCommand(action="add_wizard", transcript=text)
 
     if text.startswith(("add task", "aggiungi task", "aggiungi un task", "crea task")):
         return parse_add_voice_command(text, aliases)

@@ -31,6 +31,7 @@ from voice_transcriber import VoiceTranscriber, VoiceTranscriptionError, build_v
 DEFAULT_TASK_LIMIT = 10
 MAX_TELEGRAM_MESSAGE_CHARS = 3900
 DEFAULT_VOICE_ALIASES_FILE = ".durex_voice_aliases.json"
+DEFAULT_CONFIG_FILE = "config.yaml"
 
 
 LEARN_ACTION_ALIASES = {
@@ -117,6 +118,7 @@ class TelegramControlConfig:
     voice_command_aliases: dict[str, str] = field(default_factory=dict)
     voice_aliases_file: str = DEFAULT_VOICE_ALIASES_FILE
     voice_debug: bool = False
+    workdir_choices: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -150,6 +152,31 @@ class WorkerState:
 
         with self.lock:
             return self.thread is not None and self.thread.is_alive()
+
+
+@dataclass
+class AddWizardState:
+    """
+    In-memory state for a guided add-task flow.
+
+    Attributes:
+        token:
+            Short callback token.
+        workdir:
+            Selected task workdir.
+        priority:
+            Selected queue priority.
+        prompt:
+            Captured prompt text.
+        phase:
+            Current wizard phase.
+    """
+
+    token: str
+    workdir: Optional[str] = None
+    priority: int = 100
+    prompt: Optional[str] = None
+    phase: str = "workdir"
 
 
 class TelegramControlError(ValueError):
@@ -414,6 +441,89 @@ def parse_workdir_aliases(value: Optional[str]) -> dict[str, str]:
     return aliases
 
 
+def load_yaml_config(path: str) -> dict:
+    """
+    Load an optional YAML configuration file.
+
+    Args:
+        path:
+            YAML file path.
+
+    Returns:
+        Parsed dictionary, or an empty dictionary when the file is absent.
+
+    Raises:
+        TelegramControlError:
+            Raised when the file exists but PyYAML is unavailable or parsing
+            fails.
+    """
+
+    config_path = Path(path).expanduser()
+    if not config_path.exists():
+        return {}
+    try:
+        import yaml
+    except ImportError as exc:
+        raise TelegramControlError(
+            f"Config file {config_path} requires PyYAML. Install it or remove DUREX_CONFIG."
+        ) from exc
+    try:
+        data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise TelegramControlError(f"Could not parse config file {config_path}: {exc}") from exc
+    return data if isinstance(data, dict) else {}
+
+
+def parse_workdir_choices(value: object) -> dict[str, str]:
+    """
+    Parse configured workdir choices.
+
+    Supported shapes:
+        ``{"durex": "/lab/durex"}``
+        ``[{"label": "durex", "path": "/lab/durex"}]``
+
+    Args:
+        value:
+            Raw config value.
+
+    Returns:
+        Mapping of button labels to workdir paths.
+    """
+
+    choices: dict[str, str] = {}
+    if isinstance(value, dict):
+        for label, path in value.items():
+            if label and path:
+                choices[str(label)] = str(path)
+    elif isinstance(value, list):
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            label = item.get("label") or item.get("name")
+            path = item.get("path")
+            if label and path:
+                choices[str(label)] = str(path)
+    return choices
+
+
+def merge_workdir_choices(*choices_maps: dict[str, str]) -> dict[str, str]:
+    """
+    Merge workdir choices preserving later overrides.
+
+    Args:
+        choices_maps:
+            Workdir choice mappings in increasing priority.
+
+    Returns:
+        Merged mapping.
+    """
+
+    merged: dict[str, str] = {}
+    for choices in choices_maps:
+        merged.update(choices)
+    return merged
+
+
 def normalize_learn_action(value: str) -> str:
     """
     Normalize a /learn action label to a safe voice command action.
@@ -627,6 +737,132 @@ def list_recent_tasks(limit: int = DEFAULT_TASK_LIMIT) -> str:
     return "\n".join(lines)
 
 
+def recent_task_rows(limit: int = DEFAULT_TASK_LIMIT) -> list[sqlite3.Row]:
+    """
+    Return recent task rows for interactive Telegram views.
+
+    Args:
+        limit:
+            Maximum number of rows.
+
+    Returns:
+        SQLite rows ordered newest first.
+    """
+
+    codex_queue.init_db()
+    with codex_queue.connect() as con:
+        con.row_factory = sqlite3.Row
+        return con.execute(
+            """
+            SELECT id, title, status, priority, attempts, max_attempts, workdir, last_error
+            FROM tasks
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+
+
+def format_recent_tasks_view(rows: list[sqlite3.Row]) -> str:
+    """
+    Format recent task rows for Telegram.
+
+    Args:
+        rows:
+            Recent task rows.
+
+    Returns:
+        Telegram message text.
+    """
+
+    if not rows:
+        return "No tasks found."
+    lines = ["Recent tasks"]
+    for row in rows:
+        lines.append(f"#{row['id']} {row['status']} p={row['priority']} - {row['title']}")
+    return "\n".join(lines)
+
+
+def build_tasks_keyboard(rows: list[sqlite3.Row]) -> dict:
+    """
+    Build task-list inline keyboard.
+
+    Args:
+        rows:
+            Recent task rows.
+
+    Returns:
+        Telegram reply markup.
+    """
+
+    task_buttons = [[{"text": f"Task #{row['id']}", "callback_data": f"durextask:{row['id']}:details"}] for row in rows[:8]]
+    task_buttons.append(
+        [
+            {"text": "Refresh", "callback_data": "durextasks:refresh"},
+            {"text": "Run", "callback_data": "durexcontrol:run"},
+            {"text": "Stop", "callback_data": "durexcontrol:stop"},
+        ]
+    )
+    return {"inline_keyboard": task_buttons}
+
+
+def task_detail(task_id: int) -> tuple[str, dict]:
+    """
+    Return task detail text and keyboard.
+
+    Args:
+        task_id:
+            Task id.
+
+    Returns:
+        Tuple of text and reply markup.
+    """
+
+    codex_queue.init_db()
+    with codex_queue.connect() as con:
+        con.row_factory = sqlite3.Row
+        row = con.execute(
+            """
+            SELECT id, title, status, priority, attempts, max_attempts, workdir,
+                   reset_at, session_id, last_error
+            FROM tasks
+            WHERE id = ?
+            """,
+            (task_id,),
+        ).fetchone()
+    if row is None:
+        raise TelegramControlError("Task not found.")
+
+    lines = [
+        f"Task #{row['id']}",
+        f"Title: {row['title']}",
+        f"Status: {row['status']}",
+        f"Priority: {row['priority']}",
+        f"Attempts: {row['attempts']}/{row['max_attempts']}",
+        f"Workdir: {row['workdir']}",
+    ]
+    if row["reset_at"]:
+        lines.append(f"Reset at: {row['reset_at']}")
+    if row["session_id"]:
+        lines.append(f"Session: {row['session_id']}")
+    if row["last_error"]:
+        lines.append(f"Last error: {row['last_error']}")
+
+    keyboard = {
+        "inline_keyboard": [
+            [
+                {"text": "Tail Output", "callback_data": f"durextask:{task_id}:tail"},
+                {"text": "Back", "callback_data": "durextasks:refresh"},
+            ],
+            [
+                {"text": "Run", "callback_data": "durexcontrol:run"},
+                {"text": "Stop", "callback_data": "durexcontrol:stop"},
+            ],
+        ]
+    }
+    return "\n".join(lines), keyboard
+
+
 def tail_task_output(task_id: Optional[int] = None, chars: int = 2500) -> str:
     """
     Return the tail of one task output, defaulting to the latest task.
@@ -740,8 +976,10 @@ class TelegramControlBot:
         """
 
         self.bridge = bridge
+        normalized_allowed_workdirs = normalize_allowed_workdirs(config.allowed_workdirs)
+        workdir_choices = config.workdir_choices or {Path(path).name or path: path for path in normalized_allowed_workdirs}
         self.config = TelegramControlConfig(
-            allowed_workdirs=normalize_allowed_workdirs(config.allowed_workdirs),
+            allowed_workdirs=normalized_allowed_workdirs,
             runner_mode=config.runner_mode,
             worker_telegram_approvals=config.worker_telegram_approvals,
             telegram_verbosity=config.telegram_verbosity,
@@ -758,10 +996,14 @@ class TelegramControlBot:
             voice_command_aliases=config.voice_command_aliases,
             voice_aliases_file=config.voice_aliases_file,
             voice_debug=config.voice_debug,
+            workdir_choices={label: str(Path(path).expanduser().resolve()) for label, path in workdir_choices.items()},
         )
         self.voice_transcriber = voice_transcriber
         self.worker_state = WorkerState()
         self.pending_voice_learns: dict[str, str] = {}
+        self.next_reply_markup: Optional[dict] = None
+        self.add_wizards: dict[str, AddWizardState] = {}
+        self.active_add_wizard_token: Optional[str] = None
 
     @classmethod
     def from_env(
@@ -810,19 +1052,42 @@ class TelegramControlBot:
                 "It would create competing Telegram getUpdates consumers."
             )
 
-        if allowed_workdirs is None:
-            raw = os.environ.get("DUREX_TELEGRAM_ALLOWED_WORKDIRS", os.getcwd())
-            allowed_workdirs = [path for path in raw.split(os.pathsep) if path]
+        config_file = os.environ.get("DUREX_CONFIG", DEFAULT_CONFIG_FILE)
+        file_config = load_yaml_config(config_file)
+        control_config = file_config.get("telegram_control", {}) if isinstance(file_config.get("telegram_control"), dict) else {}
+        voice_config = control_config.get("voice", {}) if isinstance(control_config.get("voice"), dict) else {}
 
-        voice_is_enabled = parse_bool_env(os.environ.get("DUREX_VOICE_ENABLED")) if voice_enabled is None else voice_enabled
-        voice_provider = os.environ.get("DUREX_VOICE_PROVIDER", "faster_whisper")
-        voice_model = os.environ.get("DUREX_VOICE_MODEL", "base")
-        voice_language_env = os.environ.get("DUREX_VOICE_LANGUAGE", "auto").strip()
+        if allowed_workdirs is None:
+            raw = os.environ.get("DUREX_TELEGRAM_ALLOWED_WORKDIRS")
+            if raw:
+                allowed_workdirs = [path for path in raw.split(os.pathsep) if path]
+            elif isinstance(control_config.get("allowed_workdirs"), list):
+                allowed_workdirs = [str(path) for path in control_config["allowed_workdirs"] if path]
+            else:
+                allowed_workdirs = [os.getcwd()]
+
+        config_workdir_choices = parse_workdir_choices(control_config.get("workdir_choices"))
+        env_workdir_choices = parse_workdir_aliases(os.environ.get("DUREX_TELEGRAM_WORKDIR_CHOICES"))
+        workdir_choices = merge_workdir_choices(config_workdir_choices, env_workdir_choices)
+        if not workdir_choices:
+            workdir_choices = {Path(path).name or path: path for path in allowed_workdirs}
+
+        configured_voice_enabled = voice_config.get("enabled")
+        if voice_enabled is None and configured_voice_enabled is not None:
+            voice_is_enabled = bool(configured_voice_enabled)
+        else:
+            voice_is_enabled = parse_bool_env(os.environ.get("DUREX_VOICE_ENABLED")) if voice_enabled is None else voice_enabled
+        voice_provider = os.environ.get("DUREX_VOICE_PROVIDER", str(voice_config.get("provider", "faster_whisper")))
+        voice_model = os.environ.get("DUREX_VOICE_MODEL", str(voice_config.get("model", "base")))
+        voice_language_env = os.environ.get("DUREX_VOICE_LANGUAGE", str(voice_config.get("language", "auto"))).strip()
         voice_language = None if voice_language_env in {"", "auto"} else voice_language_env
-        voice_allowed_languages = parse_csv_env(os.environ.get("DUREX_VOICE_ALLOWED_LANGUAGES"), ("it", "en"))
-        voice_workdir_aliases = parse_workdir_aliases(os.environ.get("DUREX_VOICE_WORKDIR_ALIASES"))
-        voice_aliases_file = os.environ.get("DUREX_VOICE_ALIASES_FILE", DEFAULT_VOICE_ALIASES_FILE)
-        voice_debug = parse_bool_env(os.environ.get("DUREX_VOICE_DEBUG"))
+        config_allowed_languages = tuple(str(item) for item in voice_config.get("allowed_languages", ("it", "en")))
+        voice_allowed_languages = parse_csv_env(os.environ.get("DUREX_VOICE_ALLOWED_LANGUAGES"), config_allowed_languages)
+        config_workdir_aliases = parse_workdir_choices(voice_config.get("workdir_aliases"))
+        env_workdir_aliases = parse_workdir_aliases(os.environ.get("DUREX_VOICE_WORKDIR_ALIASES"))
+        voice_workdir_aliases = merge_workdir_choices(workdir_choices, config_workdir_aliases, env_workdir_aliases)
+        voice_aliases_file = os.environ.get("DUREX_VOICE_ALIASES_FILE", str(voice_config.get("aliases_file", DEFAULT_VOICE_ALIASES_FILE)))
+        voice_debug = parse_bool_env(os.environ.get("DUREX_VOICE_DEBUG")) or bool(voice_config.get("debug", False))
         voice_command_aliases = load_voice_command_aliases(voice_aliases_file)
 
         bridge = TelegramApprovalBridge(
@@ -849,6 +1114,7 @@ class TelegramControlBot:
                 voice_command_aliases=voice_command_aliases,
                 voice_aliases_file=voice_aliases_file,
                 voice_debug=voice_debug,
+                workdir_choices=workdir_choices,
             ),
             voice_transcriber=voice_transcriber,
         )
@@ -898,6 +1164,145 @@ class TelegramControlBot:
                 ],
             ]
         }
+
+    def prepare_tasks_view(self, limit: int = DEFAULT_TASK_LIMIT) -> str:
+        """
+        Prepare recent tasks with inline buttons.
+
+        Args:
+            limit:
+                Maximum task count.
+
+        Returns:
+            Message text. The keyboard is stored for the next reply.
+        """
+
+        rows = recent_task_rows(limit)
+        text = format_recent_tasks_view(rows)
+        self.next_reply_markup = build_tasks_keyboard(rows)
+        return text
+
+    def start_add_wizard(self) -> str:
+        """
+        Start a guided add-task flow.
+
+        Returns:
+            Wizard prompt text.
+        """
+
+        token = secrets.token_urlsafe(8)
+        self.add_wizards[token] = AddWizardState(token=token)
+        return self.render_add_workdir_step(token)
+
+    def render_add_workdir_step(self, token: str) -> str:
+        """
+        Render the workdir selection step.
+
+        Args:
+            token:
+                Wizard token.
+
+        Returns:
+            Telegram text.
+        """
+
+        choices = list(self.config.workdir_choices.items())
+        rows = [
+            [{"text": label, "callback_data": f"durexadd:{token}:workdir:{index}"}]
+            for index, (label, _path) in enumerate(choices[:20])
+        ]
+        rows.append([{"text": "Cancel", "callback_data": f"durexadd:{token}:cancel"}])
+        self.next_reply_markup = {"inline_keyboard": rows}
+        return "New task: choose workdir."
+
+    def render_add_priority_step(self, token: str) -> str:
+        """
+        Render priority preset and stepper controls.
+
+        Args:
+            token:
+                Wizard token.
+
+        Returns:
+            Telegram text.
+        """
+
+        state = self.add_wizards[token]
+        self.next_reply_markup = {
+            "inline_keyboard": [
+                [
+                    {"text": "1 urgent", "callback_data": f"durexadd:{token}:preset:1"},
+                    {"text": "10 high", "callback_data": f"durexadd:{token}:preset:10"},
+                ],
+                [
+                    {"text": "100 normal", "callback_data": f"durexadd:{token}:preset:100"},
+                    {"text": "999 low", "callback_data": f"durexadd:{token}:preset:999"},
+                ],
+                [
+                    {"text": "-10", "callback_data": f"durexadd:{token}:dec:10"},
+                    {"text": "-5", "callback_data": f"durexadd:{token}:dec:5"},
+                    {"text": "-1", "callback_data": f"durexadd:{token}:dec:1"},
+                    {"text": "+1", "callback_data": f"durexadd:{token}:inc:1"},
+                    {"text": "+5", "callback_data": f"durexadd:{token}:inc:5"},
+                    {"text": "+10", "callback_data": f"durexadd:{token}:inc:10"},
+                ],
+                [
+                    {"text": "Next: Prompt", "callback_data": f"durexadd:{token}:prompt"},
+                    {"text": "Cancel", "callback_data": f"durexadd:{token}:cancel"},
+                ],
+            ]
+        }
+        return f"New task: choose priority.\nCurrent priority: {state.priority}"
+
+    def render_add_confirm_step(self, token: str) -> str:
+        """
+        Render final add-task confirmation.
+
+        Args:
+            token:
+                Wizard token.
+
+        Returns:
+            Telegram text.
+        """
+
+        state = self.add_wizards[token]
+        title = default_title(state.prompt or "")
+        self.next_reply_markup = {
+            "inline_keyboard": [
+                [
+                    {"text": "Create Task", "callback_data": f"durexadd:{token}:create"},
+                    {"text": "Cancel", "callback_data": f"durexadd:{token}:cancel"},
+                ]
+            ]
+        }
+        return (
+            "Create task?\n"
+            f"Title: {title}\n"
+            f"Workdir: {state.workdir}\n"
+            f"Priority: {state.priority}\n"
+            f"Prompt: {state.prompt}"
+        )
+
+    def prepare_config_view(self) -> str:
+        """
+        Prepare runtime config controls.
+
+        Returns:
+            Config view text.
+        """
+
+        self.next_reply_markup = {
+            "inline_keyboard": [
+                [
+                    {
+                        "text": f"Voice debug: {'ON' if self.config.voice_debug else 'OFF'}",
+                        "callback_data": "durexconfig:voice_debug",
+                    }
+                ]
+            ]
+        }
+        return "Durex config"
 
     def start_worker(self) -> str:
         """
@@ -983,13 +1388,15 @@ class TelegramControlBot:
         if command.action == "status":
             return format_status(self.worker_state.is_running(), self.worker_state.last_error)
         if command.action == "tasks":
-            return list_recent_tasks(limit=command.limit or DEFAULT_TASK_LIMIT)
+            return self.prepare_tasks_view(limit=command.limit or DEFAULT_TASK_LIMIT)
         if command.action == "tail":
             return tail_task_output(task_id=command.task_id)
         if command.action == "run":
             return self.start_worker()
         if command.action == "stop":
             return self.stop_worker_after_current()
+        if command.action == "add_wizard":
+            return self.start_add_wizard()
         if command.action == "add":
             if not command.title or not command.workdir or not command.prompt:
                 raise TelegramControlError("Voice add command is missing title, workdir or prompt.")
@@ -1030,7 +1437,7 @@ class TelegramControlBot:
 
         if command == "/tasks":
             limit = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else DEFAULT_TASK_LIMIT
-            return list_recent_tasks(limit=limit)
+            return self.prepare_tasks_view(limit=limit)
 
         if command == "/tail":
             task_id = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else None
@@ -1045,6 +1452,12 @@ class TelegramControlBot:
                 priority=add.priority,
                 max_attempts=add.max_attempts,
             )
+
+        if command in {"/add-wizard", "/new-task"}:
+            return self.start_add_wizard()
+
+        if command == "/config":
+            return self.prepare_config_view()
 
         if command == "/learn":
             action, phrase = parse_learn_command(stripped)
@@ -1099,6 +1512,130 @@ class TelegramControlBot:
         if callback_id and hasattr(self.bridge, "answer_callback_query"):
             self.bridge.answer_callback_query(str(callback_id), text="Learned")
         return f"Learned voice alias: '{phrase}' -> {action}"
+
+    def handle_interactive_callback(self, callback: dict) -> Optional[str]:
+        """
+        Handle task/control inline callbacks.
+
+        Args:
+            callback:
+                Telegram callback_query payload.
+
+        Returns:
+            Response text when handled, otherwise None.
+        """
+
+        message = callback.get("message", {})
+        chat = message.get("chat", {}) if isinstance(message, dict) else {}
+        try:
+            chat_id = int(chat.get("id", 0))
+        except (TypeError, ValueError):
+            return None
+        if chat_id != self.bridge.config.allowed_chat_id:
+            return None
+
+        data = str(callback.get("data", ""))
+        callback_id = callback.get("id")
+
+        if data == "durextasks:refresh":
+            if callback_id and hasattr(self.bridge, "answer_callback_query"):
+                self.bridge.answer_callback_query(str(callback_id), text="Refreshed")
+            return self.prepare_tasks_view()
+
+        if data == "durexcontrol:run":
+            response = self.start_worker()
+            if callback_id and hasattr(self.bridge, "answer_callback_query"):
+                self.bridge.answer_callback_query(str(callback_id), text=response)
+            return response
+
+        if data == "durexcontrol:stop":
+            response = self.stop_worker_after_current()
+            if callback_id and hasattr(self.bridge, "answer_callback_query"):
+                self.bridge.answer_callback_query(str(callback_id), text="Stop requested")
+            return response
+
+        if data == "durexconfig:voice_debug":
+            object.__setattr__(self.config, "voice_debug", not self.config.voice_debug)
+            if callback_id and hasattr(self.bridge, "answer_callback_query"):
+                self.bridge.answer_callback_query(str(callback_id), text="Toggled")
+            return self.prepare_config_view()
+
+        parts = data.split(":")
+        if len(parts) >= 3 and parts[0] == "durexadd":
+            token = parts[1]
+            action = parts[2]
+            state = self.add_wizards.get(token)
+            if state is None:
+                raise TelegramControlError("Add wizard expired. Start again with /add-wizard.")
+            if callback_id and hasattr(self.bridge, "answer_callback_query"):
+                self.bridge.answer_callback_query(str(callback_id), text="OK")
+
+            if action == "cancel":
+                self.add_wizards.pop(token, None)
+                if self.active_add_wizard_token == token:
+                    self.active_add_wizard_token = None
+                return "Add task cancelled."
+
+            if action == "workdir" and len(parts) == 4:
+                choices = list(self.config.workdir_choices.items())
+                index = int(parts[3])
+                if index < 0 or index >= len(choices):
+                    raise TelegramControlError("Invalid workdir choice.")
+                _label, path = choices[index]
+                state.workdir = path
+                state.phase = "priority"
+                return self.render_add_priority_step(token)
+
+            if action == "preset" and len(parts) == 4:
+                state.priority = int(parts[3])
+                return self.render_add_priority_step(token)
+
+            if action in {"inc", "dec"} and len(parts) == 4:
+                amount = int(parts[3])
+                if action == "inc":
+                    state.priority += amount
+                else:
+                    state.priority = max(1, state.priority - amount)
+                return self.render_add_priority_step(token)
+
+            if action == "prompt":
+                if not state.workdir:
+                    raise TelegramControlError("Choose a workdir first.")
+                state.phase = "prompt"
+                self.active_add_wizard_token = token
+                return "Send the task prompt as a text message or voice message."
+
+            if action == "create":
+                if not state.workdir or not state.prompt:
+                    raise TelegramControlError("Wizard is missing workdir or prompt.")
+                response = self.add_task_from_values(
+                    title=default_title(state.prompt),
+                    prompt=state.prompt,
+                    workdir=state.workdir,
+                    priority=state.priority,
+                )
+                self.add_wizards.pop(token, None)
+                if self.active_add_wizard_token == token:
+                    self.active_add_wizard_token = None
+                return response
+
+        parts = data.split(":")
+        if len(parts) == 3 and parts[0] == "durextask":
+            task_id = int(parts[1])
+            action = parts[2]
+            if action == "details":
+                text, keyboard = task_detail(task_id)
+                if callback_id and hasattr(self.bridge, "answer_callback_query"):
+                    self.bridge.answer_callback_query(str(callback_id), text=f"Task #{task_id}")
+                self.next_reply_markup = keyboard
+                return text
+            if action == "tail":
+                text = tail_task_output(task_id=task_id)
+                if callback_id and hasattr(self.bridge, "answer_callback_query"):
+                    self.bridge.answer_callback_query(str(callback_id), text="Output")
+                return text
+
+        return None
 
     def download_voice_message(self, voice: dict) -> str:
         """
@@ -1227,6 +1764,63 @@ class TelegramControlBot:
             debug_note = "\nVoice attempts:\n" + "\n".join(attempts)
         return f"Voice transcript: {transcript}{language_note}{debug_note}\n\n{response}"
 
+    def transcribe_prompt_voice(self, voice: dict) -> str:
+        """
+        Transcribe a voice message as free-form task prompt text.
+
+        Args:
+            voice:
+                Telegram voice attachment object.
+
+        Returns:
+            Prompt transcript.
+        """
+
+        if not self.config.voice_enabled:
+            raise TelegramControlError("Voice commands are disabled. Set DUREX_VOICE_ENABLED=1.")
+        if self.voice_transcriber is None:
+            raise TelegramControlError("Voice transcription is not configured.")
+        audio_path = self.download_voice_message(voice)
+        language = self.config.voice_language or (self.config.voice_allowed_languages[0] if self.config.voice_allowed_languages else None)
+        result = self.voice_transcriber.transcribe(audio_path, language=language)
+        transcript = result.text.strip()
+        if not transcript:
+            raise TelegramControlError("Voice transcription returned empty text.")
+        return transcript
+
+    def capture_add_prompt(self, text: Optional[str], voice: Optional[dict]) -> Optional[str]:
+        """
+        Capture the next message as the prompt for an active add wizard.
+
+        Args:
+            text:
+                Message text, if present.
+            voice:
+                Voice attachment, if present.
+
+        Returns:
+            Confirmation text when a prompt was captured, otherwise None.
+        """
+
+        token = self.active_add_wizard_token
+        if not token:
+            return None
+        state = self.add_wizards.get(token)
+        if state is None or state.phase != "prompt":
+            self.active_add_wizard_token = None
+            return None
+
+        if text and text.startswith("/"):
+            return None
+
+        prompt = text.strip() if text else self.transcribe_prompt_voice(voice or {})
+        if not prompt:
+            raise TelegramControlError("Prompt cannot be empty.")
+        state.prompt = prompt
+        state.phase = "confirm"
+        self.active_add_wizard_token = None
+        return self.render_add_confirm_step(token)
+
     def handle_update(self, update: dict) -> Optional[str]:
         """
         Process one Telegram update and return the response text, if any.
@@ -1243,10 +1837,14 @@ class TelegramControlBot:
         if callback:
             try:
                 response = self.handle_learn_callback(callback)
+                if response is None:
+                    response = self.handle_interactive_callback(callback)
             except (TelegramControlError, ValueError, sqlite3.Error) as exc:
                 response = f"Command rejected: {exc}"
             if response:
-                self.send(response)
+                reply_markup = self.next_reply_markup
+                self.next_reply_markup = None
+                self.send(response, reply_markup=reply_markup)
             return response
 
         message = update.get("message")
@@ -1268,7 +1866,10 @@ class TelegramControlBot:
             return None
 
         try:
-            if text:
+            captured = self.capture_add_prompt(text, voice)
+            if captured is not None:
+                response = captured
+            elif text:
                 response = self.handle_text(text)
             else:
                 response = self.handle_voice(voice)
@@ -1283,7 +1884,9 @@ class TelegramControlBot:
         except (TelegramControlError, VoiceCommandError, VoiceTranscriptionError, ValueError, sqlite3.Error) as exc:
             response = f"Command rejected: {exc}"
 
-        self.send(response)
+        reply_markup = self.next_reply_markup
+        self.next_reply_markup = None
+        self.send(response, reply_markup=reply_markup)
         return response
 
     def run_forever(self) -> None:
@@ -1322,6 +1925,8 @@ Prompt text for Codex...
 /tail [task_id] - show task output tail
 /stop - stop worker before the next task starts
 /learn <status|tasks|tail|run|stop> <spoken phrase> - save a voice alias
+/add-wizard - add a task with buttons
+/config - show runtime toggles
 
 Voice commands are supported when DUREX_VOICE_ENABLED=1.
 Remote control does not execute shell input directly."""

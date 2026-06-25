@@ -561,6 +561,21 @@ Example Italian voice command:
 aggiungi task titolo smoke test cartella durex priorita uno prompt leggi il readme
 ```
 
+For day-to-day mobile use, prefer the guided wizard:
+
+```text
+aggiungi task
+```
+
+or:
+
+```text
+/add-wizard
+```
+
+The wizard uses buttons for workdir, priority presets, priority stepper controls,
+and final confirmation.
+
 Example English voice command:
 
 ```text
@@ -576,6 +591,9 @@ manually:
 ```text
 /learn run abbia walker
 ```
+
+`/tasks` and `lista task` return task buttons. Tap a task to open details and
+then use `Tail Output`, `Run`, or `Stop`.
 
 ### First remote-control smoke test
 

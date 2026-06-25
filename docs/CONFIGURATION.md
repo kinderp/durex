@@ -95,6 +95,22 @@ telegram:
   approval_timeout_seconds: 900
   timeout_default_decision: deny
 
+telegram_control:
+  allowed_workdirs:
+    - /lab/durex
+  workdir_choices:
+    durex: /lab/durex
+  voice:
+    enabled: true
+    provider: faster_whisper
+    model: base
+    language: auto
+    allowed_languages: [it, en]
+    aliases_file: .durex_voice_aliases.json
+    debug: false
+    workdir_aliases:
+      durex: /lab/durex
+
 policy:
   default_decision: ask
 
@@ -322,6 +338,69 @@ Allowed values:
 ask
 approve
 deny
+```
+
+---
+
+## Telegram control section
+
+`telegram-control` can read optional settings from `config.yaml`. Environment
+variables and CLI flags still override file values.
+
+```yaml
+telegram_control:
+  allowed_workdirs:
+    - /lab/durex
+  workdir_choices:
+    durex: /lab/durex
+  voice:
+    enabled: true
+    provider: faster_whisper
+    model: base
+    language: auto
+    allowed_languages: [it, en]
+    aliases_file: .durex_voice_aliases.json
+    debug: false
+    workdir_aliases:
+      durex: /lab/durex
+```
+
+### allowed_workdirs
+
+Roots accepted for Telegram-created tasks. Equivalent environment override:
+
+```bash
+export DUREX_TELEGRAM_ALLOWED_WORKDIRS="/lab/durex:/path/project"
+```
+
+### workdir_choices
+
+Named paths shown as select-like buttons in the add-task wizard.
+
+```yaml
+workdir_choices:
+  durex: /lab/durex
+  project: /path/project
+```
+
+Equivalent environment override:
+
+```bash
+export DUREX_TELEGRAM_WORKDIR_CHOICES="durex=/lab/durex,project=/path/project"
+```
+
+### voice
+
+Voice settings used by Telegram remote control. Environment overrides:
+
+```bash
+export DUREX_VOICE_ENABLED=1
+export DUREX_VOICE_MODEL=base
+export DUREX_VOICE_LANGUAGE=auto
+export DUREX_VOICE_ALLOWED_LANGUAGES=it,en
+export DUREX_VOICE_WORKDIR_ALIASES="durex=/lab/durex"
+export DUREX_VOICE_ALIASES_FILE=.durex_voice_aliases.json
+export DUREX_VOICE_DEBUG=1
 ```
 
 Recommended value:

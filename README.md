@@ -105,8 +105,8 @@ You need:
 - Codex CLI installed and configured;
 - optional: `pytest` for running the test suite;
 - optional: a Telegram bot token and chat id for remote approvals.
-- optional: `faster-whisper` from `requirements-voice.txt` for local Telegram
-  voice commands.
+- optional: `faster-whisper` and `PyYAML` from `requirements-voice.txt` for
+  local Telegram voice commands and YAML-backed Telegram control settings.
 
 Check Python:
 

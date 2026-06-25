@@ -38,7 +38,9 @@ Install the optional voice dependency:
 pip install -r requirements-voice.txt
 ```
 
-The first transcription may download the selected faster-whisper model.
+The first transcription may download the selected faster-whisper model. The
+same optional requirements file also installs PyYAML, which is needed only when
+you load Telegram control settings from `config.yaml`.
 
 ## Enable Voice Commands
 
@@ -71,6 +73,25 @@ Start remote control:
 
 ```bash
 python3 codex_queue.py telegram-control --allowed-workdir /lab/durex
+```
+
+Or configure Telegram control in `config.yaml`:
+
+```yaml
+telegram_control:
+  allowed_workdirs:
+    - /lab/durex
+  workdir_choices:
+    durex: /lab/durex
+  voice:
+    enabled: true
+    model: base
+    language: auto
+    allowed_languages: [it, en]
+    aliases_file: .durex_voice_aliases.json
+    debug: true
+    workdir_aliases:
+      durex: /lab/durex
 ```
 
 ## Workdir Aliases
@@ -148,6 +169,22 @@ Italian:
 ```text
 aggiungi task titolo smoke test cartella durex priorita uno prompt leggi il readme e riassumi cosa fa durex
 ```
+
+For normal smartphone usage, prefer the guided wizard:
+
+```text
+aggiungi task
+```
+
+or:
+
+```text
+/add-wizard
+```
+
+Durex then asks for workdir with select-like buttons, priority with preset and
+stepper buttons, and the prompt as text or voice. The final screen has a
+`Create Task` confirmation button.
 
 English:
 
@@ -246,6 +283,45 @@ You can choose another path:
 ```bash
 export DUREX_VOICE_ALIASES_FILE=/path/to/voice_aliases.json
 ```
+
+## Button-Based Task Flow
+
+Say or send:
+
+```text
+lista task
+```
+
+Durex replies with recent tasks and inline buttons:
+
+```text
+[Task #12]
+[Task #11]
+[Refresh] [Run] [Stop]
+```
+
+Tapping a task opens details and exposes `Tail Output`, `Run`, and `Stop`.
+
+For task creation, use:
+
+```text
+aggiungi task
+```
+
+The wizard uses:
+
+- select-like workdir buttons from `telegram_control.workdir_choices`;
+- priority presets: `1 urgent`, `10 high`, `100 normal`, `999 low`;
+- priority stepper buttons: `-10`, `-5`, `-1`, `+1`, `+5`, `+10`;
+- a final `Create Task` confirmation.
+
+For runtime toggles, send:
+
+```text
+/config
+```
+
+`Voice debug` is shown as an inline toggle button.
 
 ## First Smoke Test
 

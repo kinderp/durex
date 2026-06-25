@@ -46,6 +46,30 @@ telegram:
   # Supported future values: approve, deny, stop
   timeout_default_decision: deny
 
+telegram_control:
+  # Optional roots accepted by Telegram-created tasks. Environment override:
+  # DUREX_TELEGRAM_ALLOWED_WORKDIRS=/path/a:/path/b
+  allowed_workdirs:
+    - /lab/durex
+
+  # Workdir choices shown by the guided add-task wizard. Environment override:
+  # DUREX_TELEGRAM_WORKDIR_CHOICES="durex=/lab/durex,project=/path/project"
+  workdir_choices:
+    durex: /lab/durex
+
+  voice:
+    enabled: false
+    provider: faster_whisper
+    model: base
+    language: auto
+    allowed_languages:
+      - it
+      - en
+    aliases_file: .durex_voice_aliases.json
+    debug: false
+    workdir_aliases:
+      durex: /lab/durex
+
 policy:
   # Conservative default: ask the user when no rule matches.
   # Supported values: ask, approve, deny
