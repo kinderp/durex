@@ -553,7 +553,7 @@ def run_pty_command(
                         )
                     rolling_buffer = ""
 
-            if process.poll() is not None:
+            if process.poll() is not None and not readable:
                 break
 
         returncode = int(process.wait())

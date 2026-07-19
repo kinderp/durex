@@ -97,6 +97,10 @@ normal command output.
 
 `Pseudo terminal -> Durex PTY runner` with `read output` is triggered when
 `select()` reports that the PTY master file descriptor has bytes ready.
+After the direct child exits, the runner drains data already buffered by the
+PTY until EOF/EIO or one complete read interval is quiet. This preserves final
+output without waiting indefinitely for descendant processes that retain the
+slave descriptor.
 
 `Durex PTY runner -> Pseudo terminal` with `write y or n` is triggered after the
 policy path produces a final approve or deny decision.

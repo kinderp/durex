@@ -60,20 +60,21 @@ class PtyRunnerApprovalTests(unittest.TestCase):
             "answer=input('Command: git push origin feature\\nApprove this command? [y/N] '); "
             "print('approval result=' + answer)"
         )
-        provider = StaticApprovalProvider(TelegramDecisionAction.DENY)
+        for attempt in range(5):
+            with self.subTest(attempt=attempt):
+                provider = StaticApprovalProvider(TelegramDecisionAction.DENY)
+                result = run_pty_command(
+                    cmd=[sys.executable, "-c", script],
+                    cwd=os.getcwd(),
+                    policy=default_policy(),
+                    approval_provider=provider,
+                    config=PtyRunnerConfig(echo_output=False),
+                )
 
-        result = run_pty_command(
-            cmd=[sys.executable, "-c", script],
-            cwd=os.getcwd(),
-            policy=default_policy(),
-            approval_provider=provider,
-            config=PtyRunnerConfig(echo_output=False),
-        )
-
-        self.assertEqual(result.returncode, 0)
-        self.assertEqual(len(provider.requests), 1)
-        self.assertEqual(provider.requests[0].command, "git push origin feature")
-        self.assertIn("approval result=n", result.output)
+                self.assertEqual(result.returncode, 0)
+                self.assertEqual(len(provider.requests), 1)
+                self.assertEqual(provider.requests[0].command, "git push origin feature")
+                self.assertIn("approval result=n", result.output)
 
 
 if __name__ == "__main__":
