@@ -117,16 +117,27 @@ class TelegramBridgeDownloadTests(unittest.TestCase):
     def test_poll_updates_rejects_malformed_batch_before_advancing_offset(self):
         """One malformed update must not partially acknowledge its batch."""
 
-        self.bridge._last_update_id = 7
-        with mock.patch.object(
-            self.bridge,
-            "api_call",
-            return_value={"ok": True, "result": [{"update_id": 8}, "invalid"]},
-        ):
-            with self.assertRaisesRegex(TelegramBridgeError, "invalid update list"):
-                self.bridge.poll_updates(timeout=0)
+        malformed_batches = (
+            ([{"update_id": 8}, "invalid"], "invalid update list"),
+            ([{}], "invalid update ids"),
+            ([{"update_id": True}], "invalid update ids"),
+            ([{"update_id": 8}, {"update_id": 8}], "invalid update ids"),
+            ([{"update_id": 9}, {"update_id": 8}], "invalid update ids"),
+            ([{"update_id": 7}], "invalid update ids"),
+        )
 
-        self.assertEqual(self.bridge._last_update_id, 7)
+        for batch, error_text in malformed_batches:
+            with self.subTest(batch=batch):
+                self.bridge._last_update_id = 7
+                with mock.patch.object(
+                    self.bridge,
+                    "api_call",
+                    return_value={"ok": True, "result": batch},
+                ):
+                    with self.assertRaisesRegex(TelegramBridgeError, error_text):
+                        self.bridge.poll_updates(timeout=0)
+
+                self.assertEqual(self.bridge._last_update_id, 7)
 
 
 if __name__ == "__main__":

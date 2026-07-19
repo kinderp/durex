@@ -668,15 +668,24 @@ class TelegramApprovalBridge:
 
         data = self.api_call("getUpdates", payload, request_timeout=max(1, timeout) + 5)
         updates = data.get("result")
-        if not isinstance(updates, list) or any(
-            not isinstance(update, dict) for update in updates
-        ):
+        if not isinstance(updates, list):
             raise TelegramBridgeError("Telegram getUpdates returned an invalid update list.")
 
+        last_update_id = self._last_update_id
         for update in updates:
+            if not isinstance(update, dict):
+                raise TelegramBridgeError("Telegram getUpdates returned an invalid update list.")
             update_id = update.get("update_id")
-            if isinstance(update_id, int):
-                self._last_update_id = update_id
+            if (
+                isinstance(update_id, bool)
+                or not isinstance(update_id, int)
+                or (last_update_id is not None and update_id <= last_update_id)
+            ):
+                raise TelegramBridgeError("Telegram getUpdates returned invalid update ids.")
+            last_update_id = update_id
+
+        if updates:
+            self._last_update_id = last_update_id
 
         return updates
 
