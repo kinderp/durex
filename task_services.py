@@ -41,8 +41,8 @@ TASK_COLUMNS = frozenset(
 
 
 @dataclass(frozen=True)
-class TaskRecord(Mapping[str, object]):
-    """Transport-neutral representation of one persisted task."""
+class TaskRecord:
+    """Transport-neutral task with read-only ``sqlite3.Row`` access semantics."""
 
     id: int
     title: str
@@ -64,18 +64,36 @@ class TaskRecord(Mapping[str, object]):
     def from_row(cls, row: sqlite3.Row) -> "TaskRecord":
         """Build a task record from a complete SQLite task row."""
 
-        return cls(**{field: row[field] for field in cls.__dataclass_fields__})
+        return cls(**{field: row[field] for field in cls.field_names()})
 
-    def __getitem__(self, key: str) -> object:
-        if key not in self.__dataclass_fields__:
-            raise KeyError(key)
-        return getattr(self, key)
+    @classmethod
+    def field_names(cls) -> tuple[str, ...]:
+        """Return fields in their stable persisted row order."""
 
-    def __iter__(self) -> Iterator[str]:
-        return iter(self.__dataclass_fields__)
+        return tuple(cls.__dataclass_fields__)
+
+    def keys(self) -> list[str]:
+        """Return field names like ``sqlite3.Row.keys()``."""
+
+        return list(self.field_names())
+
+    def values(self) -> tuple[object, ...]:
+        """Return field values in persisted row order."""
+
+        return tuple(getattr(self, field) for field in self.field_names())
+
+    def __getitem__(self, key: str | int | slice) -> object:
+        if isinstance(key, str):
+            if key not in self.__dataclass_fields__:
+                raise KeyError(key)
+            return getattr(self, key)
+        return self.values()[key]
+
+    def __iter__(self) -> Iterator[object]:
+        return iter(self.values())
 
     def __len__(self) -> int:
-        return len(self.__dataclass_fields__)
+        return len(self.field_names())
 
 
 class TaskRepositoryError(ValueError):

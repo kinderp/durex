@@ -110,6 +110,20 @@ class TaskApplicationServiceTests(unittest.TestCase):
         self.assertEqual(task.id, latest_id)
         self.assertEqual(task.output, "latest output")
 
+    def test_task_record_preserves_read_only_sqlite_row_access(self):
+        """Compatibility shims should support keys, positions, slices and values."""
+
+        task_id = self.add_task("row compatible", priority=7)
+        task = self.service.task_detail(task_id)
+
+        self.assertEqual(task["id"], task_id)
+        self.assertEqual(task[0], task_id)
+        self.assertEqual(task[1], "row compatible")
+        self.assertEqual(task[:3], (task_id, "row compatible", "Prompt for row compatible"))
+        self.assertEqual(task.keys()[:3], ["id", "title", "prompt"])
+        self.assertEqual(list(task)[:3], list(task[:3]))
+        self.assertEqual(dict(task)["priority"], 7)
+
 
 if __name__ == "__main__":
     unittest.main()
