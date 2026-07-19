@@ -57,6 +57,36 @@ class PersistentRunnerEventSinkTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "does not match"):
             sink(other.lifecycle(RunnerLifecycle.STARTED))
 
+    def test_sink_strips_ansi_sequences_split_across_events(self):
+        """Terminal escape fragments must not leak into persisted display text."""
+
+        sink = PersistentRunnerEventSink(self.tasks, self.task_id, "run-ansi", attempt=1)
+        emitter = RunnerEventEmitter(self.task_id, sink=sink, run_id="run-ansi")
+
+        emitter.lifecycle(RunnerLifecycle.STARTED)
+        emitter.output("\x1b[3")
+        emitter.output("1mred\x1b[0m")
+        emitter.lifecycle(RunnerLifecycle.COMPLETED, returncode=0)
+
+        page = self.tasks.live_output(self.task_id, run_id="run-ansi")
+
+        self.assertEqual([chunk.text for chunk in page.chunks], ["red"])
+        self.assertEqual(page.last_event_sequence, 4)
+
+    def test_fail_open_run_is_idempotent(self):
+        """Runner-side exceptions must not leave a live run marked started."""
+
+        sink = PersistentRunnerEventSink(self.tasks, self.task_id, "run-error", attempt=1)
+        emitter = RunnerEventEmitter(self.task_id, sink=sink, run_id="run-error")
+        emitter.lifecycle(RunnerLifecycle.STARTED)
+        emitter.output("partial")
+
+        self.assertTrue(sink.fail_open_run())
+        self.assertFalse(sink.fail_open_run())
+        page = self.tasks.live_output(self.task_id, run_id="run-error")
+        self.assertEqual(page.status, "failed")
+        self.assertEqual(page.last_event_sequence, 3)
+
 
 if __name__ == "__main__":
     unittest.main()

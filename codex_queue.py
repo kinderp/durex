@@ -31,13 +31,15 @@ import datetime as dt
 import os
 import re
 import sqlite3
-import subprocess
 import sys
 import time
 from typing import Optional
+import uuid
 
 from approval_policy import default_policy
 from pty_runner import PtyRunnerConfig, run_pty_command
+from runner_events import PersistentRunnerEventSink
+from subprocess_runner import run_subprocess_command
 from task_services import (
     TASK_STATUSES,
     SQLiteTaskRepository,
@@ -426,7 +428,7 @@ def run_codex_subprocess(
     task_service: Optional[TaskApplicationService] = None,
 ) -> None:
     """
-    Run one task using classic subprocess.run().
+    Run one task using incremental subprocess output capture.
 
     Args:
         task:
@@ -441,11 +443,14 @@ def run_codex_subprocess(
     task_id = int(task["id"])
     tasks = task_service or get_task_service()
     cmd = build_codex_command(task)
+    attempt = int(task["attempts"]) + 1
+    run_id = uuid.uuid4().hex
+    event_sink = PersistentRunnerEventSink(tasks, task_id, run_id, attempt)
 
     tasks.update_task(
         task_id,
         status="RUNNING",
-        attempts=int(task["attempts"]) + 1,
+        attempts=attempt,
         last_error=None,
     )
 
@@ -455,21 +460,21 @@ def run_codex_subprocess(
     print("Command:", " ".join(cmd))
 
     try:
-        result = subprocess.run(
+        result = run_subprocess_command(
             cmd,
+            task_id=task_id,
             cwd=task["workdir"],
-            text=True,
-            capture_output=True,
-            timeout=None,
+            event_sink=event_sink,
+            run_id=run_id,
         )
-        output = (result.stdout or "") + "\n" + (result.stderr or "")
         finish_task_from_output(
             task,
-            output=output,
+            output=result.output,
             returncode=int(result.returncode),
             task_service=tasks,
         )
     except Exception as exc:
+        event_sink.fail_open_run()
         tasks.update_task(task_id, status="FAILED", last_error=str(exc))
         print(f"Task #{task_id} error: {exc}")
 
@@ -597,11 +602,14 @@ def run_codex_pty(
     task_id = int(task["id"])
     tasks = task_service or get_task_service()
     cmd = build_codex_command(task)
+    attempt = int(task["attempts"]) + 1
+    run_id = uuid.uuid4().hex
+    event_sink = PersistentRunnerEventSink(tasks, task_id, run_id, attempt)
 
     tasks.update_task(
         task_id,
         status="RUNNING",
-        attempts=int(task["attempts"]) + 1,
+        attempts=attempt,
         last_error=None,
     )
 
@@ -629,6 +637,8 @@ def run_codex_pty(
                 approval_provider=active_provider,
                 telegram_verbosity=telegram_verbosity,
                 config=PtyRunnerConfig(echo_output=echo_output),
+                event_sink=event_sink,
+                run_id=run_id,
             )
         finally:
             if runtime is not None:
@@ -640,9 +650,11 @@ def run_codex_pty(
             task_service=tasks,
         )
     except TelegramBridgeError as exc:
+        event_sink.fail_open_run()
         tasks.update_task(task_id, status="FAILED", last_error=str(exc))
         print(f"Telegram configuration error for task #{task_id}: {exc}")
     except Exception as exc:
+        event_sink.fail_open_run()
         tasks.update_task(task_id, status="FAILED", last_error=str(exc))
         print(f"Task #{task_id} PTY error: {exc}")
 

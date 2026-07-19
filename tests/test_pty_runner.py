@@ -103,6 +103,29 @@ class PtyRunnerApprovalTests(unittest.TestCase):
                 self.assertEqual(provider.requests[0].command, "git push origin feature")
                 self.assertIn("approval result=n", result.output)
 
+    def test_stop_decision_emits_cancelled_lifecycle(self):
+        """A human stop is terminal and distinct from process failure."""
+
+        script = "input('Command: git push\\nApprove this command? [y/N] ')"
+        provider = StaticApprovalProvider(TelegramDecisionAction.STOP)
+        events = []
+
+        result = run_pty_command(
+            cmd=[sys.executable, "-c", script],
+            policy=default_policy(),
+            approval_provider=provider,
+            config=PtyRunnerConfig(echo_output=False),
+            event_sink=events.append,
+            run_id="stopped-run",
+        )
+
+        lifecycle = [event for event in events if isinstance(event, RunnerLifecycleEvent)]
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(
+            [event.state for event in lifecycle],
+            [RunnerLifecycle.STARTED, RunnerLifecycle.CANCELLED],
+        )
+
     def test_post_exit_drain_has_total_deadline(self):
         """Continuous descendant output must not keep a completed task alive."""
 

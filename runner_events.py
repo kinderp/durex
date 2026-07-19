@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import re
 from typing import Optional
 import uuid
 
@@ -20,21 +19,61 @@ from runtime_contracts import (
 from task_services import TaskApplicationService
 
 
-ANSI_OSC_RE = re.compile(r"\x1b\][^\x07]*(?:\x07|\x1b\\)")
-ANSI_CSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
-ANSI_SINGLE_RE = re.compile(r"\x1b[@-_]")
-DISPLAY_CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+class TerminalDisplayNormalizer:
+    """Strip terminal controls incrementally across output chunk boundaries."""
+
+    def __init__(self) -> None:
+        self._state = "text"
+        self._last_was_carriage_return = False
+
+    def feed(self, text: str) -> str:
+        visible: list[str] = []
+        for char in text:
+            if self._state == "text":
+                if char == "\n" and self._last_was_carriage_return:
+                    self._last_was_carriage_return = False
+                    continue
+                self._last_was_carriage_return = False
+                if char == "\x1b":
+                    self._state = "escape"
+                elif char == "\r":
+                    visible.append("\n")
+                    self._last_was_carriage_return = True
+                elif char in {"\n", "\t"} or (ord(char) >= 32 and char != "\x7f"):
+                    visible.append(char)
+                continue
+
+            if self._state == "escape":
+                if char == "[":
+                    self._state = "csi"
+                elif char == "]":
+                    self._state = "osc"
+                else:
+                    self._state = "text"
+                continue
+
+            if self._state == "csi":
+                if "@" <= char <= "~":
+                    self._state = "text"
+                continue
+
+            if self._state == "osc":
+                if char == "\x07":
+                    self._state = "text"
+                elif char == "\x1b":
+                    self._state = "osc_escape"
+                continue
+
+            if self._state == "osc_escape":
+                self._state = "text" if char == "\\" else "osc"
+
+        return redact_for_display("".join(visible)) or ""
 
 
 def normalize_live_output(text: str) -> str:
     """Normalize terminal controls and redact obvious secrets for display."""
 
-    normalized = ANSI_OSC_RE.sub("", text)
-    normalized = ANSI_CSI_RE.sub("", normalized)
-    normalized = ANSI_SINGLE_RE.sub("", normalized)
-    normalized = normalized.replace("\r\n", "\n").replace("\r", "\n")
-    normalized = DISPLAY_CONTROL_RE.sub("", normalized)
-    return redact_for_display(normalized) or ""
+    return TerminalDisplayNormalizer().feed(text)
 
 
 class RunnerEventEmitter:
@@ -138,14 +177,22 @@ class PersistentRunnerEventSink:
         self.task_id = task_id
         self.run_id = run_id
         self.attempt = attempt
+        self.last_sequence = 0
+        self.started = False
+        self.finished = False
+        self._normalizer = TerminalDisplayNormalizer()
 
     def __call__(self, event: RunnerEvent) -> None:
         if event.task_id != self.task_id or event.run_id != self.run_id:
             raise ValueError("Runner event does not match the persistent sink identity")
+        if event.sequence <= self.last_sequence:
+            raise ValueError("Runner event sequence is not monotonic")
 
         if isinstance(event, RunnerLifecycleEvent):
             if event.state == RunnerLifecycle.STARTED:
                 self.tasks.start_task_run(self.task_id, self.run_id, self.attempt)
+                self.started = True
+                self.last_sequence = event.sequence
                 return
             self.tasks.finish_task_run(
                 self.task_id,
@@ -154,10 +201,12 @@ class PersistentRunnerEventSink:
                 event.state.value,
                 event.returncode,
             )
+            self.finished = True
+            self.last_sequence = event.sequence
             return
 
         if isinstance(event, RunnerOutputEvent):
-            text = normalize_live_output(event.text)
+            text = self._normalizer.feed(event.text)
             if text:
                 self.tasks.append_live_output(
                     self.task_id,
@@ -165,3 +214,23 @@ class PersistentRunnerEventSink:
                     event.sequence,
                     text,
                 )
+            self.last_sequence = event.sequence
+            return
+
+        self.last_sequence = event.sequence
+
+    def fail_open_run(self, returncode: Optional[int] = None) -> bool:
+        """Conservatively finalize a started run after runner-side failure."""
+
+        if not self.started or self.finished:
+            return False
+        changed = self.tasks.finish_task_run(
+            self.task_id,
+            self.run_id,
+            self.last_sequence + 1,
+            RunnerLifecycle.FAILED.value,
+            returncode,
+        )
+        self.finished = True
+        self.last_sequence += 1
+        return changed

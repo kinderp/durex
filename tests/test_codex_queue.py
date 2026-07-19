@@ -4,7 +4,10 @@ Tests for queue output parsing helpers.
 
 import os
 import sqlite3
+import sys
 import tempfile
+import threading
+import time
 from pathlib import Path
 import unittest
 from unittest import mock
@@ -147,18 +150,112 @@ class QueueLifecycleCharacterizationTests(unittest.TestCase):
 
         task = self.add_task()
         task_service = codex_queue.get_task_service()
-        completed = mock.Mock(returncode=0, stdout="done", stderr="")
+        completed = mock.Mock(returncode=0, output="done\n")
 
         with mock.patch.object(
             codex_queue,
             "get_task_service",
             side_effect=AssertionError("global service lookup"),
-        ), mock.patch.object(codex_queue.subprocess, "run", return_value=completed):
+        ), mock.patch.object(
+            codex_queue,
+            "run_subprocess_command",
+            return_value=completed,
+        ):
             codex_queue.run_codex_subprocess(task, task_service=task_service)
 
         stored = self.load_task(task["id"])
         self.assertEqual(stored["status"], "COMPLETED")
         self.assertEqual(stored["output"], "done\n")
+
+    def test_subprocess_output_is_queryable_before_process_exit(self):
+        """The live projection must update while subprocess work is running."""
+
+        task = self.add_task()
+        task_service = codex_queue.get_task_service()
+        script = (
+            "import time; print('first', flush=True); "
+            "time.sleep(0.6); print('second', flush=True)"
+        )
+        errors = []
+
+        with mock.patch.object(
+            codex_queue,
+            "build_codex_command",
+            return_value=[sys.executable, "-u", "-c", script],
+        ):
+            worker = threading.Thread(
+                target=lambda: self._capture_thread_error(
+                    errors,
+                    codex_queue.run_codex_subprocess,
+                    task,
+                    task_service,
+                )
+            )
+            worker.start()
+            page = self._wait_for_live_text(task_service, task.id, "first")
+            self.assertTrue(worker.is_alive())
+            worker.join(timeout=3)
+
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(errors, [])
+        self.assertIn("first", "".join(chunk.text for chunk in page.chunks))
+        self.assertEqual(self.load_task(task.id)["status"], "COMPLETED")
+
+    def test_pty_output_is_queryable_before_process_exit(self):
+        """The PTY path must use the same persistent event projection."""
+
+        task = self.add_task()
+        task_service = codex_queue.get_task_service()
+        script = (
+            "import time; print('first', flush=True); "
+            "time.sleep(0.6); print('second', flush=True)"
+        )
+        errors = []
+
+        with mock.patch.object(
+            codex_queue,
+            "build_codex_command",
+            return_value=[sys.executable, "-u", "-c", script],
+        ):
+            worker = threading.Thread(
+                target=lambda: self._capture_thread_error(
+                    errors,
+                    codex_queue.run_codex_pty,
+                    task,
+                    False,
+                    "normal",
+                    False,
+                    task_service,
+                )
+            )
+            worker.start()
+            page = self._wait_for_live_text(task_service, task.id, "first")
+            self.assertTrue(worker.is_alive())
+            worker.join(timeout=3)
+
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(errors, [])
+        self.assertIn("first", "".join(chunk.text for chunk in page.chunks))
+        self.assertEqual(self.load_task(task.id)["status"], "COMPLETED")
+
+    @staticmethod
+    def _capture_thread_error(errors, target, *args):
+        try:
+            target(*args)
+        except BaseException as exc:
+            errors.append(exc)
+
+    @staticmethod
+    def _wait_for_live_text(task_service, task_id, expected):
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            page = task_service.live_output(task_id)
+            if page is not None and expected in "".join(
+                chunk.text for chunk in page.chunks
+            ):
+                return page
+            time.sleep(0.01)
+        raise AssertionError(f"Live output did not contain {expected!r}")
 
     def test_standalone_telegram_pty_uses_dispatcher_runtime(self):
         """Standalone approval mode must compose a dispatcher-backed provider."""
