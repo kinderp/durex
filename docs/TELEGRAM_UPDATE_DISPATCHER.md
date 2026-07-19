@@ -172,6 +172,12 @@ Transient Bot API polling errors use bounded exponential backoff. In
 `telegram-control`, the latest error remains visible through `/status`. A
 successful poll resets the delay.
 
+The transport advances its local offset across each fetched Bot API response.
+Expected transport failures while dispatching one update are therefore isolated
+to that update and reported without aborting the rest of the fetched batch. This
+prevents a failed response send or callback acknowledgement from discarding a
+later command or approval decision that Telegram returned in the same response.
+
 Standalone approval mode uses a dedicated dispatcher thread for the duration of
 the PTY task. Its Bot API socket timeout is derived from the long-poll timeout,
 and process ownership is released by that thread only after it exits. If a poll

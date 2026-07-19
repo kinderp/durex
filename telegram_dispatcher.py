@@ -402,15 +402,21 @@ class TelegramUpdateDispatcher:
                         timeout=self.poll_timeout_seconds,
                         allowed_updates=["message", "callback_query"],
                     )
-                    retry_delay = self.retry_base_seconds
-                    for update in updates:
-                        self.dispatch_update(update)
                 except TelegramBridgeError as exc:
                     if self.on_poll_error is not None:
                         self.on_poll_error(exc)
                     if self._stop_event.wait(retry_delay):
                         break
                     retry_delay = min(retry_delay * 2, self.retry_max_seconds)
+                    continue
+
+                retry_delay = self.retry_base_seconds
+                for update in updates:
+                    try:
+                        self.dispatch_update(update)
+                    except TelegramBridgeError as exc:
+                        if self.on_poll_error is not None:
+                            self.on_poll_error(exc)
         finally:
             self.approval_broker.shutdown()
 

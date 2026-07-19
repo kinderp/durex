@@ -283,6 +283,35 @@ class TelegramUpdateDispatcherTests(unittest.TestCase):
         self.assertEqual([str(error) for error in errors], ["temporary failure"])
         self.assertEqual(decision.action, TelegramDecisionAction.DENY)
 
+    def test_dispatch_failure_does_not_drop_later_update_in_batch(self):
+        message = {"update_id": 1, "message": {"chat": {"id": 123}, "text": "/status"}}
+        callback = make_callback("active-id", "approve", update_id=2)
+        transport = FakeApprovalTransport([[message, callback]])
+        broker = TelegramApprovalBroker()
+        broker.register(make_approval("active-id"))
+        errors = []
+
+        def fail_message(update):
+            raise TelegramBridgeError(f"response failed for update {update['update_id']}")
+
+        dispatcher = self.make_dispatcher(
+            transport,
+            handler=fail_message,
+            broker=broker,
+            on_poll_error=errors.append,
+        )
+
+        with self.assertRaises(KeyboardInterrupt):
+            dispatcher.run_forever()
+        decision = broker.wait_for_decision("active-id", timeout_seconds=0)
+
+        self.assertEqual(decision.action, TelegramDecisionAction.APPROVE)
+        self.assertEqual(
+            [str(error) for error in errors],
+            ["response failed for update 1"],
+        )
+        self.assertEqual(len(transport.poll_calls), 2)
+
     def test_callback_parser_rejects_invalid_chat_shape(self):
         callback = make_callback("active-id", "approve")["callback_query"]
         callback["message"]["chat"]["id"] = None
