@@ -409,6 +409,7 @@ class SQLiteTaskRepository:
             raise TaskRepositoryError("attempt must be positive")
         now = self._now()
         with self._connect() as con:
+            con.execute("BEGIN IMMEDIATE")
             task_exists = con.execute(
                 "SELECT 1 FROM tasks WHERE id = ?",
                 (task_id,),
@@ -455,6 +456,7 @@ class SQLiteTaskRepository:
         bounded_text = text[-self._live_output_max_chars :]
         now = self._now()
         with self._connect() as con:
+            con.execute("BEGIN IMMEDIATE")
             run = con.execute(
                 """
                 SELECT task_id, status, last_event_sequence,
@@ -523,6 +525,7 @@ class SQLiteTaskRepository:
             raise TaskRepositoryError("sequence must be positive")
         now = self._now()
         with self._connect() as con:
+            con.execute("BEGIN IMMEDIATE")
             run = con.execute(
                 """
                 SELECT task_id, status, returncode, last_event_sequence

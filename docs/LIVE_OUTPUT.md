@@ -239,6 +239,10 @@ sensitive local data and do not expose it through an unauthorized interface.
 Each append opens a separate SQLite connection and completes validation,
 insert, compaction, and metadata update in one short transaction. Readers use
 separate connections and never share mutable cursor objects with the runner.
+Run start, append, and finalization acquire a SQLite `BEGIN IMMEDIATE` write
+reservation before reading mutable run state. This serializes competing writers
+without excluding normal readers during validation and prevents stale sequence
+checks from moving a cursor backward.
 
 Issue #10 does not provide multi-process task ownership. Two workers can still
 claim the same task through the existing non-atomic scheduling path; issue #11

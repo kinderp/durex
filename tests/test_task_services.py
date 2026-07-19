@@ -216,6 +216,38 @@ class TaskApplicationServiceTests(unittest.TestCase):
         with self.assertRaisesRegex(TaskRepositoryError, "finalized differently"):
             service.finish_task_run(task_id, "run-finish", 3, "failed", 1)
 
+    def test_live_run_writes_lock_before_validation(self):
+        """Lifecycle writes must serialize before reading mutable run state."""
+
+        statements = []
+
+        def connect():
+            connection = sqlite3.connect(self.db_path)
+            connection.set_trace_callback(statements.append)
+            return connection
+
+        service = TaskApplicationService(
+            SQLiteTaskRepository(connect=connect, now=lambda: self.now),
+            now=lambda: self.now,
+        )
+        task_id = service.add_task("transaction", "prompt")
+
+        for operation in (
+            lambda: service.start_task_run(task_id, "run-transaction", 1),
+            lambda: service.append_live_output(
+                task_id, "run-transaction", 2, "chunk"
+            ),
+            lambda: service.finish_task_run(
+                task_id, "run-transaction", 3, "completed", 0
+            ),
+        ):
+            statements.clear()
+            operation()
+            begin = next(
+                statement for statement in statements if statement.startswith("BEGIN")
+            )
+            self.assertEqual(begin, "BEGIN IMMEDIATE")
+
     def test_finished_run_retention_survives_service_restart(self):
         """Only configured historical runs remain queryable after reopening SQLite."""
 
