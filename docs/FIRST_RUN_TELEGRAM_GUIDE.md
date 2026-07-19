@@ -14,6 +14,8 @@ Related documentation:
   remote-control architecture.
 - [TELEGRAM_APPROVALS.md](TELEGRAM_APPROVALS.md) for Codex approval prompts
   over Telegram.
+- [TELEGRAM_UPDATE_DISPATCHER.md](TELEGRAM_UPDATE_DISPATCHER.md) for shared
+  polling, callback routing, and worker approvals.
 - [TELEGRAM_VOICE_COMMANDS.md](TELEGRAM_VOICE_COMMANDS.md) for local
   speech-to-text command parsing.
 - [CONFIGURATION.md](CONFIGURATION.md) for YAML and environment configuration.
@@ -183,6 +185,15 @@ For one project:
 
 ```bash
 python3 codex_queue.py telegram-control --allowed-workdir /lab/durex
+```
+
+For a PTY worker that can ask for Codex approvals through the same bot:
+
+```bash
+python3 codex_queue.py telegram-control \
+  --allowed-workdir /lab/durex \
+  --runner-mode pty \
+  --worker-telegram-approvals
 ```
 
 For multiple projects:
@@ -482,6 +493,11 @@ Start the Telegram command daemon:
 ```bash
 python3 codex_queue.py telegram-control --allowed-workdir /lab/durex
 ```
+
+Add `--runner-mode pty --worker-telegram-approvals` when `/run` must support
+approval buttons. Queue commands and approval callbacks then share the sole
+`getUpdates` loop. Do not run chat-id discovery or standalone `run --telegram`
+concurrently with the same bot token.
 
 ---
 

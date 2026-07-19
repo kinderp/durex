@@ -1,6 +1,6 @@
 # Telegram Approvals
 
-This document describes the planned Telegram approval system for Durex v0.2.
+This document describes the Telegram approval system for Durex v0.2.
 
 The goal is to allow Codex to keep running while the user is away from the computer, while still asking for human approval when a terminal prompt requires confirmation.
 
@@ -17,9 +17,11 @@ The local flow is:
 1. Codex prints an interactive prompt in a pseudo-terminal.
 2. The PTY runner detects that prompt and extracts context.
 3. The approval policy decides whether the prompt needs the user.
-4. The Telegram bridge sends a message to the configured chat.
+4. The approval gateway registers the request and sends it through the Telegram
+   bridge.
 5. The user taps a button.
-6. The Telegram bridge returns a normalized decision to the PTY runner.
+6. The shared update dispatcher validates the callback and resolves the local
+   approval broker.
 7. The PTY runner writes the final input into Codex or stops the task.
 
 Read every diagram edge as a trigger. An edge can mean terminal output arrived,
@@ -36,10 +38,13 @@ flowchart LR
     Codex[Codex CLI in PTY] --> PtyRunner[PTY runner]
     PtyRunner --> Detector[Approval detector]
     Detector --> Policy[Approval policy]
-    Policy -->|ASK_TELEGRAM| Bot[Telegram bot]
+    Policy -->|ASK_TELEGRAM| Gateway[Approval gateway]
+    Gateway --> Bot[Telegram transport]
     Bot --> User[User phone]
-    User --> Bot
-    Bot --> PtyRunner
+    User --> Dispatcher[Update dispatcher]
+    Dispatcher --> Broker[Approval broker]
+    Broker --> Gateway
+    Gateway --> PtyRunner
     PtyRunner -->|writes decision| Codex
 ```
 
@@ -59,9 +64,15 @@ recognizes prompt-like output.
 `Approval policy` is the local safety gate. It decides whether a command can be
 auto-allowed, auto-denied, or must be sent to Telegram.
 
-`Telegram bot` is implemented by `telegram_bridge.py`. It calls the Telegram Bot
-API, sends approval messages, polls updates, parses callbacks, and returns
-decisions.
+`Approval gateway` registers a one-use callback token, sends the approval
+message, and waits on the local broker.
+
+`Telegram transport` is implemented by `telegram_bridge.py`. It calls the Bot
+API, renders approval messages, and performs update requests only for the shared
+dispatcher.
+
+`Update dispatcher` is the single `getUpdates` owner. `Approval broker` joins
+validated callbacks from that dispatcher to the waiting PTY worker thread.
 
 `User phone` is the human interaction point. The phone only sends button
 callbacks; it never sends shell input directly.
@@ -76,16 +87,17 @@ to the rolling buffer.
 `Approval detector -> Approval policy` is triggered only when an approval prompt
 is detected.
 
-`Approval policy -> Telegram bot` with `ASK_TELEGRAM` is triggered when local
+`Approval policy -> Approval gateway` with `ASK_TELEGRAM` is triggered when local
 policy cannot safely decide automatically.
 
 `Telegram bot -> User phone` is triggered by `sendMessage` with an inline
 keyboard.
 
-`User phone -> Telegram bot` is triggered by the button callback.
+`User phone -> Update dispatcher` is triggered by the button callback returned
+through the dispatcher's single long poll.
 
-`Telegram bot -> PTY runner` is triggered when the bridge matches a callback to
-the pending request id.
+`Update dispatcher -> Approval broker -> Approval gateway -> PTY runner` is
+triggered after chat id, one-use callback token, and action validation.
 
 `PTY runner -> Codex CLI in PTY` is triggered after the final action is known.
 Approve writes `y\n`, deny writes `n\n`, and stop terminates the child process.
@@ -102,7 +114,10 @@ sequenceDiagram
     participant Pty as PTY runner
     participant Detector as approval_detector.py
     participant Policy as approval_policy.py
-    participant Bot as telegram_bridge.py
+    participant Gateway as approval gateway
+    participant Broker as approval broker
+    participant Dispatcher as update dispatcher
+    participant Bot as Telegram transport
     participant User
 
     Codex-->>Pty: terminal output chunk
@@ -111,10 +126,14 @@ sequenceDiagram
     Detector-->>Pty: ApprovalRequest(command, reason, context)
     Pty->>Policy: classify_command(command)
     Policy-->>Pty: ASK_TELEGRAM
-    Pty->>Bot: send_approval_request(request)
+    Pty->>Gateway: request_decision(request)
+    Gateway->>Broker: register(one-use token)
+    Gateway->>Bot: send_approval_request(request)
     Bot->>User: Telegram message with buttons
-    User-->>Bot: callback data: approve, deny, show_context, stop
-    Bot-->>Pty: ApprovalDecision(action, source, decided_at)
+    User-->>Dispatcher: callback data: approve, deny, show_context, stop
+    Dispatcher->>Broker: resolve_callback(decision)
+    Broker-->>Gateway: final decision
+    Gateway-->>Pty: ApprovalDecision(action, source, decided_at)
     alt approve
         Pty->>Codex: write approval input
     else deny
@@ -135,8 +154,8 @@ back into the PTY.
 
 `approval_policy.py` decides whether the request needs a human.
 
-`telegram_bridge.py` transports the request to Telegram and converts callbacks
-into an `ApprovalDecision`.
+`telegram_bridge.py` performs Bot API transport. `telegram_dispatcher.py` owns
+polling, callback validation, one-use correlation, and broker synchronization.
 
 `User` taps one of the Telegram buttons.
 
@@ -158,17 +177,18 @@ classification.
 
 `Policy -> PTY: ASK_TELEGRAM` means the policy requires a human answer.
 
-`PTY -> Bot: send_approval_request(request)` converts the detector request into
-a Telegram approval message.
+`PTY -> Gateway: request_decision(request)` registers a one-use callback token
+before sending the Telegram approval message.
 
 `Bot -> User: Telegram message with buttons` calls `sendMessage` with inline
 keyboard markup.
 
 `User -> Bot: callback data` is produced when the user taps a button. Callback
-data follows the internal shape `durex:<request_id>:<action>`.
+data follows the internal shape `durex:<one_use_token>:<action>`.
 
-`Bot -> PTY: ApprovalDecision(...)` happens after the bridge verifies chat id,
-request id, and action.
+`Dispatcher -> Broker -> PTY: ApprovalDecision(...)` happens after the
+dispatcher verifies chat id, token, and action. The gateway restores the stable
+detector request id before returning.
 
 `approve` writes positive terminal input to Codex.
 
@@ -180,7 +200,7 @@ request id, and action.
 
 ## Telegram buttons
 
-A first implementation should support these buttons:
+The implementation supports these buttons:
 
 | Button | Action | Meaning |
 |---|---|---|
@@ -195,7 +215,7 @@ Button handling details:
 
 - `Approve` and `Deny` are final actions. They end the approval wait loop and
   produce terminal input.
-- `Show context` is not final. The bridge sends more terminal context and keeps
+- `Show context` is not final. The dispatcher sends more terminal context and keeps
   waiting for approve, deny, stop, or timeout.
 - `Stop task` is final. The PTY runner records a stop decision and terminates
   the child process.
@@ -378,18 +398,25 @@ The runner should not wait forever for a Telegram response.
 sequenceDiagram
     autonumber
     participant Pty as PTY runner
-    participant Bot as Telegram bridge
+    participant Gateway as Approval gateway
+    participant Broker as Approval broker
+    participant Dispatcher as Update dispatcher
+    participant Bot as Telegram transport
     participant User
     participant Codex as Codex CLI
 
-    Pty->>Bot: send approval request
+    Pty->>Gateway: request decision
+    Gateway->>Broker: register request
+    Gateway->>Bot: send approval request
     Bot->>User: approval message
     alt user replies before timeout
-        User-->>Bot: approve or deny
-        Bot-->>Pty: decision
+        User-->>Dispatcher: approve or deny
+        Dispatcher->>Broker: resolve decision
+        Broker-->>Gateway: decision
+        Gateway-->>Pty: decision
     else timeout expires
-        Bot-->>Pty: timeout
-        Pty->>Pty: apply default timeout decision
+        Broker-->>Gateway: configured timeout decision
+        Gateway-->>Pty: configured timeout decision
     end
     Pty->>Codex: write resulting input or stop task
 ```
@@ -399,8 +426,8 @@ sequenceDiagram
 `PTY runner` is waiting for a final approval decision while Codex is blocked at
 the prompt.
 
-`Telegram bridge` polls the Telegram Bot API for updates matching the request
-id.
+`Approval broker` holds the local wait. The shared dispatcher polls the Bot API
+and may resolve the request, but the PTY never polls Telegram.
 
 `User` may answer in time, answer too late, or not answer at all.
 
@@ -409,20 +436,20 @@ process.
 
 ### Timeout edge triggers
 
-`PTY -> Bot: send approval request` starts the timeout window.
+`PTY -> Gateway: request decision` registers the request before the outbound
+message is visible.
 
 `Bot -> User: approval message` sends the inline keyboard.
 
 `user replies before timeout` is triggered when a valid callback arrives before
 the configured deadline.
 
-`timeout expires` is triggered when polling reaches
+`timeout expires` is triggered when the broker reaches
 `approval_timeout_seconds` without a final decision.
 
-`Bot -> PTY: timeout` returns a synthetic decision with source `timeout`.
-
-`PTY -> PTY: apply default timeout decision` converts timeout to approve or deny.
-The safe default is deny.
+`Broker -> Gateway -> PTY: configured timeout decision` returns a synthetic
+decision with source `timeout`. The safe default is deny. Dispatcher shutdown
+is stricter: it never turns an approve timeout default into an approval.
 
 `PTY -> Codex: write resulting input or stop task` is the final local action.
 

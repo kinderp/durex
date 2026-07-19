@@ -95,9 +95,10 @@ appears to be waiting for human approval.
 `approval_policy.py` classifies the detected command as auto-allow, auto-deny,
 or ask-Telegram.
 
-`telegram_bridge.py` is a small Telegram Bot API client. It sends approval
-messages, polls for callback queries, validates bot setup, and returns a
-normalized approval decision.
+`telegram_bridge.py` is a small Telegram Bot API transport. It sends approval
+messages, performs update requests for the shared dispatcher, validates bot
+setup, and provides chat-id discovery. `telegram_dispatcher.py` validates and
+normalizes approval callbacks.
 
 `User phone` is where the Telegram inline keyboard is shown. The phone never
 executes commands directly; it only sends an approval decision back to the local
@@ -197,8 +198,9 @@ flowchart LR
 
     subgraph RemoteLayer[Remote approval layer]
         Bot[TelegramApprovalBridge]
-        Request[send_approval_request payload]
-        Wait[wait_for_decision request_id]
+        Dispatcher[TelegramUpdateDispatcher]
+        Broker[TelegramApprovalBroker]
+        Gateway[TelegramApprovalGateway]
     end
 
     CLI --> DB
@@ -208,10 +210,12 @@ flowchart LR
     PtyRun --> Detector
     Detector --> Policy
     Policy --> Decision
-    Decision --> Request
-    Request --> Bot
-    Bot --> Wait
-    Wait --> PtyRun
+    Decision --> Gateway
+    Gateway --> Bot
+    Dispatcher --> Bot
+    Dispatcher --> Broker
+    Broker --> Gateway
+    Gateway --> PtyRun
     ClassicRun --> DB
     PtyRun --> DB
 ```
@@ -254,14 +258,16 @@ prompt and extracts enough context to build an `ApprovalRequest`.
 `Policy -> Decision` is the classification result: `AUTO_ALLOW`, `AUTO_DENY`,
 or `ASK_TELEGRAM`.
 
-`Decision -> Request` happens only for `ASK_TELEGRAM`; automatic policy
+`Decision -> Gateway` happens only for `ASK_TELEGRAM`; automatic policy
 decisions go directly back to the PTY runner instead.
 
-`Request -> Bot` sends the Telegram message through the Bot API.
+`Gateway -> Bot` registers a one-use callback token, then sends the Telegram
+message through the Bot API.
 
-`Bot -> Wait` starts long polling for the matching callback query.
+`Dispatcher -> Bot` is the process's only Telegram `getUpdates` loop.
 
-`Wait -> PtyRun` returns the final approval decision, which the PTY runner turns
+`Dispatcher -> Broker` routes validated approval callbacks. `Broker -> Gateway ->
+PtyRun` returns the first final approval decision, which the PTY runner turns
 into terminal input.
 
 `ClassicRun -> DB` and `PtyRun -> DB` happen after the child process exits and
@@ -344,8 +350,8 @@ flowchart TD
     F --> G[classify command with policy]
     G -->|AUTO_ALLOW| H[write y newline to PTY]
     G -->|AUTO_DENY| I[write n newline to PTY]
-    G -->|ASK_TELEGRAM| J[send Telegram approval request]
-    J --> K[wait for Telegram callback]
+    G -->|ASK_TELEGRAM| J[register and send Telegram approval request]
+    J --> K[wait on local approval broker]
     K -->|approve| H
     K -->|deny| I
     K -->|show context| L[send additional terminal context]
@@ -382,11 +388,12 @@ automatically, and ambiguous commands can be sent to Telegram.
 
 `write n newline to PTY` simulates the user typing no.
 
-`send Telegram approval request` creates a Telegram message with inline buttons
-and enough context for the user to decide.
+`register and send Telegram approval request` registers a one-use callback token
+before creating the message with inline buttons and decision context.
 
-`wait for Telegram callback` polls Bot API updates until the matching callback
-arrives or the approval timeout expires.
+`wait on local approval broker` blocks on a thread-safe local event. The shared
+Telegram dispatcher owns Bot API polling and resolves the broker when a matching
+callback arrives or shutdown requires a conservative decision.
 
 `send additional terminal context` sends a second Telegram message with more PTY
 context when the user taps "Show context". It does not answer the Codex prompt.

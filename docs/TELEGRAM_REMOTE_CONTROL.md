@@ -2,9 +2,9 @@
 
 This document describes the first Telegram remote-control mode for Durex.
 
-Remote control is separate from Telegram approvals. Approval mode only answers
-Codex confirmation prompts. Remote-control mode accepts Telegram messages that
-operate the Durex queue and worker.
+Remote control and Telegram approvals are separate capabilities behind one
+dispatcher. Approval callbacks only answer Codex confirmation prompts.
+Remote-control messages operate the Durex queue and worker.
 
 Remote control is a queue-control channel, not a terminal-control channel. The
 Telegram bot receives commands from one configured chat, turns those commands
@@ -465,8 +465,8 @@ python3 codex_queue.py telegram-control --runner-mode subprocess
 python3 codex_queue.py telegram-control --runner-mode pty
 ```
 
-Telegram approval prompts inside remotely started worker tasks are not supported
-yet:
+Telegram approval prompts inside remotely started PTY tasks use the same update
+dispatcher as remote-control commands:
 
 ```bash
 python3 codex_queue.py telegram-control \
@@ -474,11 +474,16 @@ python3 codex_queue.py telegram-control \
   --worker-telegram-approvals
 ```
 
-The command rejects this combination because remote control and approval prompts
-would otherwise create competing Telegram `getUpdates` consumers for the same
-bot token. A future implementation should use one shared Telegram update
-dispatcher that routes message commands and callback-query approvals from a
-single polling loop.
+`TelegramUpdateDispatcher` is the only `getUpdates` owner in the process. It
+routes normal commands and control callbacks to `TelegramControlBot`, while the
+reserved `durex:<token>:<action>` namespace resolves the worker's pending
+approval through `TelegramApprovalBroker`. See
+[TELEGRAM_UPDATE_DISPATCHER.md](TELEGRAM_UPDATE_DISPATCHER.md) for ownership,
+idempotency, callback namespaces, and failure behavior.
+
+Do not run another Durex polling process with the same bot token. In particular,
+stop `telegram-control` before using `telegram-check --discover-chat-id` or
+standalone `run --telegram` with that token.
 
 ## Security Boundaries
 
@@ -495,8 +500,8 @@ Codex control, command authorization, hard process stops and arbitrary input.
 
 ## Implementation Notes
 
-The remote-control daemon uses Telegram long polling for `message` updates. It
-shares the same Bot API client class as Telegram approvals, but command routing
-lives in `telegram_control.py`.
+The remote-control daemon delegates long polling for `message` and
+`callback_query` updates to `TelegramUpdateDispatcher`. Command routing remains
+in `telegram_control.py`; approval callbacks are resolved by the shared broker.
 
 The command router is tested without network access using a fake bridge.

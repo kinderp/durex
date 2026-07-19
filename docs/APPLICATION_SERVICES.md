@@ -4,9 +4,10 @@ This document defines the internal boundaries introduced for roadmap issue #8.
 They preserve the current CLI and Telegram behavior while separating queue
 persistence, application operations, runtime contracts, and transport adapters.
 
-The change is intentionally incremental. It does not implement live output,
-shared Telegram polling, durable worker ownership, or immediate process
-cancellation. Those capabilities remain assigned to issues #9 through #15.
+The change is intentionally incremental. Issue #9 now supplies shared Telegram
+polling and approval brokering on top of these boundaries. Live output, durable
+worker ownership, and immediate process cancellation remain assigned to issues
+#10 through #15.
 
 ## Dependency direction
 
@@ -109,9 +110,9 @@ The runner event union contains:
   decision.
 
 `TaskRunner` accepts a `TaskRecord` and an event sink, then returns a normalized
-`RunnerResult`. Current subprocess and PTY functions remain legacy adapters in
-#8. Issues #9 and #10 will connect them to the event contract and shared approval
-broker without putting Telegram calls into the event model.
+`RunnerResult`. Current subprocess and PTY functions remain legacy adapters.
+Issue #9 changed PTY approval waits to consume `ApprovalDecisionProvider`, while
+issue #10 will connect output and lifecycle behavior to the runner event contract.
 
 ### Worker supervision
 
@@ -125,8 +126,11 @@ immediate process cancellation.
 `TelegramTransport` defines authorization configuration, polling, message
 delivery, callback acknowledgement, and bounded file download operations used
 by the control adapter.
-`TelegramApprovalBridge` satisfies this protocol structurally. Issue #9 will
-make one dispatcher own `getUpdates` and route control and approval callbacks.
+`TelegramApprovalBridge` satisfies this protocol structurally.
+`TelegramUpdateDispatcher` now owns `getUpdates`, routes control updates, and
+resolves approval callbacks through `TelegramApprovalBroker`. The PTY consumes
+`TelegramApprovalGateway` through its decision-provider protocol instead of
+depending on transport polling.
 
 ## Compatibility contract
 
@@ -160,7 +164,6 @@ discovery.
 
 The following behavior is deliberately outside #8:
 
-- one shared Telegram update dispatcher and approval broker: #9;
 - live runner event emission and bounded persistent output: #10;
 - atomic task claiming, leases, recovery, and immediate cancellation: #11;
 - the mobile live task console: #12;
