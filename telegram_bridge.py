@@ -51,6 +51,9 @@ from urllib import parse, request, error
 DEFAULT_TELEGRAM_FILE_MAX_BYTES = 10 * 1024 * 1024
 TELEGRAM_FILE_CHUNK_BYTES = 64 * 1024
 DEFAULT_TELEGRAM_API_TIMEOUT_SECONDS = 30
+TELEGRAM_MESSAGE_MAX_CHARS = 4096
+TELEGRAM_CONTEXT_HEADER_MAX_CHARS = 1024
+TELEGRAM_TRUNCATION_MARKER = "\n...[truncated]"
 
 
 class TelegramDecisionAction(str, Enum):
@@ -185,6 +188,26 @@ class TelegramBridgeError(RuntimeError):
     """
     Raised when the Telegram API returns an error or an invalid response.
     """
+
+
+def truncate_telegram_text(
+    text: str,
+    max_chars: int = TELEGRAM_MESSAGE_MAX_CHARS,
+    preserve_tail: bool = False,
+) -> str:
+    """Bound Bot API text with a visible marker and optional tail retention."""
+
+    if max_chars < 1:
+        raise ValueError("max_chars must be positive")
+    if len(text) <= max_chars:
+        return text
+    if max_chars <= len(TELEGRAM_TRUNCATION_MARKER):
+        return text[-max_chars:] if preserve_tail else text[:max_chars]
+
+    content_chars = max_chars - len(TELEGRAM_TRUNCATION_MARKER)
+    if preserve_tail:
+        return TELEGRAM_TRUNCATION_MARKER + text[-content_chars:]
+    return text[:content_chars] + TELEGRAM_TRUNCATION_MARKER
 
 
 def extract_chat_ids_from_updates(updates: list[dict[str, Any]]) -> list[int]:
@@ -576,7 +599,7 @@ class TelegramApprovalBridge:
 
         payload: dict[str, Any] = {
             "chat_id": self.config.allowed_chat_id,
-            "text": text,
+            "text": truncate_telegram_text(text),
         }
         if reply_markup is not None:
             payload["reply_markup"] = reply_markup
@@ -619,12 +642,23 @@ class TelegramApprovalBridge:
             None.
         """
 
-        text = (
+        header = (
             f"Context for request {approval.request_id}\n\n"
             f"Task: {approval.task_title}\n"
             f"Directory: {approval.workdir}\n\n"
-            f"Terminal context:\n{approval.context}"
+            f"Terminal context:"
         )
+        bounded_header = truncate_telegram_text(
+            header,
+            max_chars=TELEGRAM_CONTEXT_HEADER_MAX_CHARS,
+        )
+        context_budget = TELEGRAM_MESSAGE_MAX_CHARS - len(bounded_header) - 1
+        bounded_context = truncate_telegram_text(
+            approval.context,
+            max_chars=context_budget,
+            preserve_tail=True,
+        )
+        text = f"{bounded_header}\n{bounded_context}"
         self.send_message(text=text)
 
     def answer_callback_query(self, callback_query_id: str, text: str = "") -> None:

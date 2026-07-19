@@ -7,7 +7,14 @@ from pathlib import Path
 import unittest
 from unittest import mock
 
-from telegram_bridge import TelegramApprovalBridge, TelegramBridgeConfig, TelegramBridgeError
+from telegram_bridge import (
+    TELEGRAM_MESSAGE_MAX_CHARS,
+    TELEGRAM_TRUNCATION_MARKER,
+    TelegramApprovalBridge,
+    TelegramApprovalRequest,
+    TelegramBridgeConfig,
+    TelegramBridgeError,
+)
 
 
 class StubResponse(BytesIO):
@@ -160,6 +167,38 @@ class TelegramBridgeDownloadTests(unittest.TestCase):
             return_value={"ok": True, "result": {"message_id": 7}},
         ):
             self.assertEqual(self.bridge.send_message("test"), 7)
+
+    def test_outbound_messages_are_bounded_and_context_keeps_tail(self):
+        """Telegram text limits must not hide the newest approval context."""
+
+        oversized = "x" * (TELEGRAM_MESSAGE_MAX_CHARS + 100)
+        approval = TelegramApprovalRequest(
+            request_id="wire-id",
+            task_id=7,
+            task_title="Bounded context",
+            workdir="/tmp/project",
+            command="pytest -q",
+            reason="test",
+            context=f"old-{oversized}-newest-context",
+        )
+        responses = []
+
+        def capture(_method, payload, request_timeout=30):
+            responses.append(payload)
+            return {"ok": True, "result": {"message_id": len(responses)}}
+
+        with mock.patch.object(self.bridge, "api_call", side_effect=capture):
+            self.bridge.send_message(oversized)
+            self.bridge.send_context(approval)
+
+        normal_text = responses[0]["text"]
+        context_text = responses[1]["text"]
+        self.assertEqual(len(normal_text), TELEGRAM_MESSAGE_MAX_CHARS)
+        self.assertTrue(normal_text.endswith(TELEGRAM_TRUNCATION_MARKER))
+        self.assertLessEqual(len(context_text), TELEGRAM_MESSAGE_MAX_CHARS)
+        self.assertIn("Context for request wire-id", context_text)
+        self.assertIn(TELEGRAM_TRUNCATION_MARKER, context_text)
+        self.assertTrue(context_text.endswith("newest-context"))
 
     def test_poll_updates_rejects_malformed_batch_before_advancing_offset(self):
         """One malformed update must not partially acknowledge its batch."""

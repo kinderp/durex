@@ -183,6 +183,9 @@ same bounded retry path without partially acknowledging the batch.
 Outbound `sendMessage` responses must contain a result object with a non-boolean
 integer message id. Invalid success-response shapes also become
 `TelegramBridgeError`, preserving the dispatcher's per-update failure boundary.
+Outbound text is capped at Telegram's 4,096-character message limit with a
+visible truncation marker. Approval context messages preserve their bounded
+task header and the newest terminal-output tail.
 
 The transport advances its local offset across each fetched Bot API response.
 Expected transport failures while dispatching one update are therefore isolated
