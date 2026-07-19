@@ -90,6 +90,12 @@ class WorkerSnapshot:
 
     running: bool
     current_task_id: Optional[int] = None
+    current_run_id: Optional[str] = None
+    worker_id: Optional[str] = None
+    started_at: Optional[str] = None
+    last_output_at: Optional[str] = None
+    pending_interaction: bool = False
+    stop_after_current: bool = False
     last_error: Optional[str] = None
 
 
@@ -99,8 +105,11 @@ class WorkerSupervisor(Protocol):
     def start(self) -> bool:
         """Start work and return whether a new worker was started."""
 
-    def request_stop(self) -> None:
-        """Request a cooperative stop."""
+    def request_stop_after_current(self) -> None:
+        """Request a cooperative stop between tasks."""
+
+    def request_stop_current(self, reason: str) -> bool:
+        """Cancel the currently owned task, if any."""
 
     def snapshot(self) -> WorkerSnapshot:
         """Return the current observable worker state."""

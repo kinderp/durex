@@ -15,6 +15,7 @@ class RunCancellation:
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
+        self._event = threading.Event()
         self._requested = False
         self._reason: Optional[str] = None
         self._terminator: Optional[Callable[[], None]] = None
@@ -40,9 +41,15 @@ class RunCancellation:
             self._requested = True
             self._reason = reason
             terminator = self._terminator
+            self._event.set()
         if terminator is not None:
             terminator()
         return True
+
+    def wait(self, timeout: Optional[float] = None) -> bool:
+        """Wait until cancellation is requested."""
+
+        return self._event.wait(timeout)
 
     def bind_terminator(self, terminator: Callable[[], None]) -> None:
         """Bind the active runner process and honor an earlier request."""
