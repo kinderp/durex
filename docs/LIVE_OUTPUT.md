@@ -159,9 +159,9 @@ records `dropped_through_sequence` plus `dropped_chars`. A single oversized
 chunk keeps only its newest suffix.
 
 Starting a new run prunes finished history beyond the configured count. Active
-`started` rows are never pruned because issue #10 cannot decide whether another
-worker still owns them. Lease and stale-run recovery belong to issue
-[#11](https://github.com/kinderp/durex/issues/11).
+`started` rows are never pruned. The durable supervisor now fences every live
+write with its current lease and closes expired runs conservatively; see
+[WORKER_SUPERVISOR.md](WORKER_SUPERVISOR.md).
 
 These are constructor defaults, not YAML or environment options. Unified
 configuration and validation belong to issue
@@ -206,10 +206,11 @@ Terminal lifecycle finalization is compare-and-set behavior:
 - output cannot be appended after finalization.
 
 If runner code raises after `started`, `PersistentRunnerEventSink.fail_open_run()`
-marks the live run `failed` once. A host crash can still leave `started` rows;
-issue #11 will add durable worker ownership, heartbeat, and restart recovery.
-If that cleanup also fails, queue finalization preserves the original runner
-error and appends the cleanup error as secondary diagnostic context.
+marks the live run `failed` once. A host crash can temporarily leave `started`
+rows; the durable supervisor uses lease expiry at startup to fail the task and
+close its matching run conservatively. If that cleanup also fails, queue
+finalization preserves the original runner error and appends the cleanup error
+as secondary diagnostic context.
 
 The run status describes the child execution. Queue finalization can still move
 a task to `WAITING_LIMIT` after a non-zero child exit when usage-limit text is
@@ -244,9 +245,10 @@ reservation before reading mutable run state. This serializes competing writers
 without excluding normal readers during validation and prevents stale sequence
 checks from moving a cursor backward.
 
-Issue #10 does not provide multi-process task ownership. Two workers can still
-claim the same task through the existing non-atomic scheduling path; issue #11
-owns atomic claims and leases.
+Task claims use a separate `BEGIN IMMEDIATE` transaction and monotonically
+fenced lease epoch. Live start, append, and finalization validate that same
+claim inside their event transaction, so a recovered or reassigned worker
+cannot append late output.
 
 ## Validation coverage
 
@@ -267,7 +269,6 @@ The test suite covers:
 
 ## Deferred work
 
-- Atomic claims, leases, stale-run recovery, and immediate cancellation: #11.
 - Telegram Refresh, More, and live task console presentation: #12.
 - Durable interaction audit and lifecycle notifications: #13.
 - YAML/environment configuration for retention limits: #14.

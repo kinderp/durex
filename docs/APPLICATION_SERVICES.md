@@ -6,8 +6,9 @@ persistence, application operations, runtime contracts, and transport adapters.
 
 The change is intentionally incremental. Issue #9 supplies shared Telegram
 polling and approval brokering. Issue #10 connects both runners to typed events
-and bounded persistent live output. Durable worker ownership and immediate
-process cancellation remain assigned to issues #11 through #15.
+and bounded persistent live output. Issue #11 supplies durable worker ownership
+and immediate process cancellation. Issues #12 through #15 build presentation,
+audit, configuration, and release hardening on that contract.
 
 ## Dependency direction
 
@@ -69,16 +70,17 @@ service:
 - add and retrieve tasks;
 - list tasks in CLI order or Telegram recency order;
 - select the next runnable task;
+- atomically claim, heartbeat, cancel, and finalize tasks with lease fencing;
 - count tasks by status;
 - update task fields;
 - perform compare-and-set status transitions;
 - start and finalize task runs idempotently;
 - append bounded ordered output and read it with sequence cursors.
 
-`transition()` is the atomic state-transition boundary. It updates a task only
-when the persisted status belongs to the caller's expected status set. Issue
-#11 will use this boundary for atomic claiming and durable worker ownership; #8
-introduces and tests the contract without changing current claiming behavior.
+`claim_next()` is the execution-ownership boundary. It selects and changes one
+runnable task inside a `BEGIN IMMEDIATE` transaction. Heartbeat, cancellation,
+task finalization, and live-output writes require the resulting lease id and
+monotonic epoch.
 
 ### `SQLiteTaskRepository`
 
@@ -129,10 +131,11 @@ adapters. Issue #9 changed PTY approval waits to consume
 
 ### Worker supervision
 
-`WorkerSupervisor` defines start, cooperative stop, and observable snapshot
-operations. The current `WorkerState` and background-thread behavior remain in
-`telegram_control.py`; issue #11 will provide the durable implementation and
-immediate process cancellation.
+`WorkerSupervisor` defines start, stop-after-current, immediate current-run
+cancellation, and observable snapshot operations. `DurableWorkerSupervisor`
+implements the contract in `worker_supervisor.py` and is shared by CLI and
+Telegram adapters. It owns claims, heartbeat, stale recovery, event observation,
+and one owner-scoped cancellation token.
 
 ### Telegram transport
 
@@ -184,7 +187,6 @@ discovery.
 
 The following behavior is deliberately outside #8:
 
-- atomic task claiming, leases, recovery, and immediate cancellation: #11;
 - the mobile live task console: #12;
 - durable interaction audit and lifecycle notifications: #13;
 - unified validated configuration and migrations: #14;

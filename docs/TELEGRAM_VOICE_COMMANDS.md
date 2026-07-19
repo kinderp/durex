@@ -8,7 +8,8 @@ the transcript into a structured Durex command, and executes only the supported
 remote-control operation.
 
 Voice input is not shell input. The transcript is mapped to one of the same safe
-operations used by text remote control: status, tasks, tail, add, run or stop.
+operations used by text remote control: status, tasks, tail, add, run, stop
+after current, or stop current.
 
 ## Privacy Model
 
@@ -254,6 +255,28 @@ English:
 stop worker
 ```
 
+This waits for the active task and stops before claiming another one.
+
+### Stop Current Task
+
+Italian:
+
+```text
+ferma task corrente
+annulla task corrente
+interrompi task corrente
+```
+
+English:
+
+```text
+stop current
+stop current task
+cancel current task
+```
+
+This immediately cancels only the process group owned by the current task.
+
 ## Voice Calibration
 
 Short operational commands can be misheard by the local speech-to-text model.
@@ -311,6 +334,7 @@ tasks
 tail
 run
 stop
+stop_current
 ```
 
 They cannot target `add`, because task creation needs structured fields such as

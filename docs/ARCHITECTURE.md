@@ -37,7 +37,7 @@ polling rather than webhooks.
 flowchart TD
     User[User] -->|adds tasks| CLI[codex_queue.py CLI]
     CLI -->|insert/update| DB[(SQLite task database)]
-    Worker[Worker loop] -->|select next task| DB
+    Worker[Durable worker supervisor] -->|atomic claim and heartbeat| DB
     Worker --> Runner{Runner mode}
     Runner -->|non-interactive mode| SubprocessRunner[subprocess runner]
     Runner -->|interactive approval mode| PtyRunner[PTY runner]
@@ -77,8 +77,9 @@ configuration, and starts Telegram remote-control mode.
 `SQLite task database` is the source of truth for queued work. In addition to
 task metadata and final output, it stores bounded live runs and output chunks.
 
-`Worker loop` is the scheduler. It repeatedly asks SQLite for the next runnable
-task, starts the selected runner, and persists the final result.
+`Durable worker supervisor` is the scheduler. It atomically claims a runnable
+task, renews its lease, starts the selected runner, and persists the final
+result.
 
 `Runner mode` is the dispatch decision between classic non-interactive
 execution and PTY-based interactive execution.
@@ -131,8 +132,9 @@ added later without changing the main flow.
 `CLI -> SQLite` happens when the CLI initializes the schema, inserts a task,
 lists tasks, or updates task fields.
 
-`Worker loop -> SQLite` happens on every polling iteration. The worker calls
-`get_next_task()` and selects the highest-priority runnable task.
+`Durable worker supervisor -> SQLite` happens on claim, heartbeat, output, and
+finalization. Claiming selects and changes the highest-priority runnable task
+in one write transaction.
 
 `Worker loop -> Runner mode` happens after a task is selected. The configured
 `--runner-mode` chooses subprocess or PTY.
@@ -266,7 +268,8 @@ channels or structured Codex events.
 `CLI -> DB` is triggered by queue commands such as `init`, `add`, `seed`, and
 `list`.
 
-`DB -> BuildCommand` is triggered after `get_next_task()` returns a task row.
+`DB -> BuildCommand` is triggered after `claim_next_task()` returns a fenced
+`TaskClaim`.
 
 `BuildCommand -> ClassicRun` is triggered by subprocess runner mode.
 
@@ -303,15 +306,17 @@ the worker calls the shared output finalization path.
 %%{init: {"theme": "base", "themeVariables": {"primaryColor": "#ffffff", "primaryTextColor": "#111827", "primaryBorderColor": "#374151", "lineColor": "#374151", "secondaryColor": "#f3f4f6", "tertiaryColor": "#ffffff", "textColor": "#111827", "mainBkg": "#ffffff", "nodeBorder": "#374151", "clusterBkg": "#f9fafb", "clusterBorder": "#9ca3af", "edgeLabelBackground": "#ffffff", "actorBkg": "#ffffff", "actorBorder": "#374151", "actorTextColor": "#111827", "activationBkgColor": "#e5e7eb", "activationBorderColor": "#374151", "signalColor": "#111827", "signalTextColor": "#111827", "noteBkgColor": "#fef3c7", "noteTextColor": "#111827", "noteBorderColor": "#92400e"}}}%%
 stateDiagram-v2
     [*] --> PENDING
-    PENDING --> RUNNING: worker selects task
+    PENDING --> RUNNING: atomic fenced claim
     RUNNING --> COMPLETED: Codex exits with success
     RUNNING --> WAITING_LIMIT: usage limit detected
     WAITING_LIMIT --> RUNNING: reset_at passed
     RUNNING --> PENDING: retryable error and attempts left
     RUNNING --> FAILED: max attempts reached
     RUNNING --> FAILED: local runner error
+    RUNNING --> CANCELLED: operator or approval stop
     COMPLETED --> [*]
     FAILED --> [*]
+    CANCELLED --> [*]
 ```
 
 ### State meanings
@@ -330,12 +335,16 @@ failure. The task is not runnable again until `reset_at` has passed.
 `FAILED` means Durex does not plan to retry the task. This can happen because
 the maximum number of attempts was reached or because the local runner failed.
 
+`CANCELLED` means the current supervisor-owned process group was stopped by an
+operator command or approval decision.
+
 ### Transition triggers
 
 `[*] -> PENDING` happens when `add_task()` inserts a new row.
 
-`PENDING -> RUNNING` happens when `get_next_task()` selects the task and
-`run_task()` dispatches it.
+`PENDING -> RUNNING` happens in one `BEGIN IMMEDIATE` claim transaction. The
+transaction increments attempts and a monotonic lease epoch before `run_task()`
+dispatches the claimed execution.
 
 `RUNNING -> COMPLETED` happens when the runner returns `returncode == 0`.
 
@@ -618,11 +627,11 @@ flowchart TD
 
 ### Function roles
 
-`worker_loop(check_interval, stop_when_empty)` owns the continuous worker
-process. It sleeps between checks when no task is ready, unless
-`stop_when_empty` asks it to exit.
+`worker_loop(check_interval, stop_when_empty)` configures and runs
+`DurableWorkerSupervisor`. The supervisor sleeps between checks when no task is
+ready, unless `stop_when_empty` asks it to exit.
 
-`get_next_task()` queries SQLite for the next `PENDING` task or
+`claim_next_task()` atomically acquires the next `PENDING` task or
 `WAITING_LIMIT` task whose `reset_at` has passed.
 
 `run_task(task, runner_mode, telegram_enabled, telegram_verbosity, echo_output)`
