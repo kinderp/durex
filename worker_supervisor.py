@@ -228,9 +228,17 @@ class DurableWorkerSupervisor:
         stop: threading.Event,
     ) -> None:
         while not stop.wait(self.heartbeat_seconds):
-            if self.tasks.heartbeat_task_claim(claim, self._lease_expiry()):
-                continue
-            reason = "Worker lease ownership was lost."
+            try:
+                renewed = self.tasks.heartbeat_task_claim(
+                    claim,
+                    self._lease_expiry(),
+                )
+            except Exception as exc:
+                reason = f"Worker lease heartbeat failed: {exc}"
+            else:
+                if renewed:
+                    continue
+                reason = "Worker lease ownership was lost."
             self._set_last_error(reason)
             cancellation.request(reason)
             return

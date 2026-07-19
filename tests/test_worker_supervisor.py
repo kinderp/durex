@@ -137,6 +137,42 @@ class DurableWorkerSupervisorTests(unittest.TestCase):
         self.assertEqual(task.status, "FAILED")
         self.assertIn("without finalizing", task.last_error)
 
+    def test_heartbeat_error_cancels_execution_before_lease_expiry(self):
+        """A failed renewal must stop work instead of silently losing its lease."""
+
+        task_id = self.add_task("heartbeat failure")
+
+        def execute(_claim, cancellation, _observe):
+            self.assertTrue(cancellation.wait(1.0))
+
+        supervisor = DurableWorkerSupervisor(
+            self.tasks,
+            execute,
+            worker_id="worker-heartbeat",
+            lease_seconds=0.2,
+            heartbeat_seconds=0.05,
+            now=lambda: self.now,
+        )
+        original_heartbeat = self.tasks.heartbeat_task_claim
+
+        def fail_heartbeat(_claim, _lease_expires_at):
+            raise sqlite3.OperationalError("database unavailable")
+
+        self.tasks.heartbeat_task_claim = fail_heartbeat
+        self.addCleanup(
+            setattr,
+            self.tasks,
+            "heartbeat_task_claim",
+            original_heartbeat,
+        )
+
+        supervisor.run(stop_when_empty=True, check_interval=0)
+
+        task = self.tasks.task_detail(task_id)
+        self.assertEqual(task.status, "CANCELLED")
+        self.assertIn("heartbeat failed", task.terminal_reason)
+        self.assertIn("database unavailable", supervisor.snapshot().last_error)
+
 
 if __name__ == "__main__":
     unittest.main()
