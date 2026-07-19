@@ -609,6 +609,20 @@ def parse_learn_command(text: str) -> tuple[str, str]:
     return action, phrase
 
 
+def validate_voice_alias_target(action: str, phrase: str) -> None:
+    """Reject learned mappings that conflict with the built-in voice grammar."""
+
+    try:
+        built_in = parse_voice_command(phrase)
+    except VoiceCommandError:
+        return
+    if built_in.action != action:
+        raise TelegramControlError(
+            f"Voice phrase '{phrase}' already maps to built-in action "
+            f"'{built_in.action}' and cannot be learned as '{action}'."
+        )
+
+
 def load_voice_command_aliases(path: str) -> dict[str, str]:
     """
     Load voice command aliases from a JSON file.
@@ -1532,6 +1546,7 @@ class TelegramControlBot:
 
         if command == "/learn":
             action, phrase = parse_learn_command(stripped)
+            validate_voice_alias_target(action, phrase)
             save_voice_command_alias(self.config.voice_aliases_file, action, phrase)
             self.config.voice_command_aliases[phrase] = action
             return f"Learned voice alias: '{phrase}' -> {action}"
@@ -1576,6 +1591,7 @@ class TelegramControlBot:
         if not phrase:
             raise TelegramControlError("Learn candidate expired. Send the voice command again.")
 
+        validate_voice_alias_target(action, phrase)
         save_voice_command_alias(self.config.voice_aliases_file, action, phrase)
         self.config.voice_command_aliases[phrase] = action
 

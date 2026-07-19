@@ -281,6 +281,10 @@ Learning the same normalized phrase again replaces its previous action. The
 mapping therefore remains identical before and after restarting Telegram
 control.
 
+Durex rejects a phrase that already belongs to a different built-in action. For
+example, `/learn run status` is rejected because `status` already has an
+unambiguous built-in meaning.
+
 Learned aliases can target only simple remote-control actions:
 
 ```text

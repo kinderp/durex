@@ -581,6 +581,74 @@ class TelegramControlTests(unittest.TestCase):
 
         self.assertIn("Unsupported learn action", response)
 
+    def test_learn_command_rejects_conflicting_builtin_phrase(self):
+        """Text learning should not claim a built-in phrase changed actions."""
+
+        alias_file = str(Path(self.tmp.name) / "voice_aliases.json")
+        bridge = FakeBridge(chat_id=123)
+        bot = TelegramControlBot(
+            bridge=bridge,
+            config=TelegramControlConfig(
+                allowed_workdirs=[self.tmp.name],
+                voice_aliases_file=alias_file,
+            ),
+        )
+
+        response = bot.handle_update(
+            {"message": {"chat": {"id": 123}, "text": "/learn run status"}}
+        )
+
+        self.assertIn("already maps to built-in action 'status'", response)
+        self.assertFalse(Path(alias_file).exists())
+
+    def test_learn_callback_rejects_conflicting_builtin_phrase(self):
+        """Inline learning should apply the same built-in collision rule."""
+
+        alias_file = str(Path(self.tmp.name) / "voice_aliases.json")
+        bridge = FakeBridge(chat_id=123)
+        bot = TelegramControlBot(
+            bridge=bridge,
+            config=TelegramControlConfig(
+                allowed_workdirs=[self.tmp.name],
+                voice_aliases_file=alias_file,
+            ),
+        )
+        keyboard = bot.build_voice_learn_keyboard("status")
+        callback = keyboard["inline_keyboard"][1][1]["callback_data"]
+
+        response = bot.handle_update(
+            {
+                "callback_query": {
+                    "id": "callback-conflict",
+                    "message": {"chat": {"id": 123}},
+                    "data": callback,
+                }
+            }
+        )
+
+        self.assertIn("already maps to built-in action 'status'", response)
+        self.assertFalse(Path(alias_file).exists())
+
+    def test_learn_command_allows_same_builtin_action(self):
+        """Learning a phrase for its existing action should remain a safe no-op."""
+
+        alias_file = str(Path(self.tmp.name) / "voice_aliases.json")
+        bridge = FakeBridge(chat_id=123)
+        bot = TelegramControlBot(
+            bridge=bridge,
+            config=TelegramControlConfig(
+                allowed_workdirs=[self.tmp.name],
+                voice_aliases_file=alias_file,
+            ),
+        )
+
+        response = bot.handle_update(
+            {"message": {"chat": {"id": 123}, "text": "/learn status status"}}
+        )
+
+        self.assertEqual(response, "Learned voice alias: 'status' -> status")
+        self.assertEqual(load_voice_command_aliases(alias_file)["status"], "status")
+
     def test_tasks_command_sends_task_buttons_and_detail_callback(self):
         """Task list should expose inline buttons for task details."""
 
