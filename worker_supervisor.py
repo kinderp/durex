@@ -104,11 +104,11 @@ class DurableWorkerSupervisor:
             recovered = self.tasks.recover_stale_task_claims()
             if recovered:
                 joined = ", ".join(f"#{task_id}" for task_id in recovered)
-                self.notify(f"Recovered expired worker claims as failed: {joined}")
+                self._notify(f"Recovered expired worker claims as failed: {joined}")
 
             while True:
                 if self._consume_stop_after_current():
-                    self.notify("Worker stopped before starting another task.")
+                    self._notify("Worker stopped before starting another task.")
                     return
 
                 claim = self.tasks.claim_next_task(
@@ -119,16 +119,18 @@ class DurableWorkerSupervisor:
                 )
                 if claim is None:
                     if stop_when_empty:
-                        self.notify("No executable tasks found. Worker is idle.")
+                        self._notify("No executable tasks found. Worker is idle.")
                         return
-                    self.notify(f"No task ready. Checking again in {check_interval:g} seconds.")
+                    self._notify(
+                        f"No task ready. Checking again in {check_interval:g} seconds."
+                    )
                     time.sleep(check_interval)
                     continue
 
                 self._execute_claim(claim)
         except Exception as exc:
             self._set_last_error(str(exc))
-            self.notify(f"Worker error: {exc}")
+            self._notify(f"Worker error: {exc}")
         finally:
             with self._lock:
                 self._running = False
@@ -199,7 +201,7 @@ class DurableWorkerSupervisor:
             name=f"durex-heartbeat-{claim.run_id}",
         )
         heartbeat.start()
-        self.notify(f"Starting task #{claim.task.id}: {claim.task.title}")
+        self._notify(f"Starting task #{claim.task.id}: {claim.task.title}")
 
         try:
             self.execute(claim, cancellation, self.observe_event)
@@ -290,3 +292,9 @@ class DurableWorkerSupervisor:
     def _set_last_error(self, error: str) -> None:
         with self._lock:
             self._last_error = error
+
+    def _notify(self, message: str) -> None:
+        try:
+            self.notify(message)
+        except Exception as exc:
+            self._set_last_error(f"Worker notification failed: {exc}")

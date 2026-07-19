@@ -173,6 +173,32 @@ class DurableWorkerSupervisorTests(unittest.TestCase):
         self.assertIn("heartbeat failed", task.terminal_reason)
         self.assertIn("database unavailable", supervisor.snapshot().last_error)
 
+    def test_notification_error_does_not_abandon_claim(self):
+        """Transport failure cannot interrupt worker ownership cleanup."""
+
+        task_id = self.add_task("notification failure")
+
+        def execute(claim, _cancellation, _observe):
+            self.tasks.finish_task_claim(claim, "COMPLETED", "done")
+
+        def fail_notification(_message):
+            raise RuntimeError("telegram unavailable")
+
+        supervisor = DurableWorkerSupervisor(
+            self.tasks,
+            execute,
+            notify=fail_notification,
+            worker_id="worker-notification",
+            now=lambda: self.now,
+        )
+
+        supervisor.run(stop_when_empty=True, check_interval=0)
+
+        self.assertEqual(self.tasks.task_detail(task_id).status, "COMPLETED")
+        snapshot = supervisor.snapshot()
+        self.assertIsNone(snapshot.current_task_id)
+        self.assertIn("telegram unavailable", snapshot.last_error)
+
 
 if __name__ == "__main__":
     unittest.main()
