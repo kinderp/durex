@@ -29,7 +29,6 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import os
-from pathlib import Path
 import re
 import sqlite3
 import subprocess
@@ -39,6 +38,12 @@ from typing import Optional
 
 from approval_policy import default_policy
 from pty_runner import PtyRunnerConfig, run_pty_command
+from task_services import (
+    TASK_STATUSES,
+    SQLiteTaskRepository,
+    TaskApplicationService,
+    TaskRecord,
+)
 from telegram_bridge import TelegramApprovalBridge, TelegramBridgeConfig, TelegramBridgeError
 
 
@@ -48,13 +53,7 @@ DEFAULT_CHECK_INTERVAL = 60
 DEFAULT_RETRY_HOURS = 5
 
 
-STATUSES = {
-    "PENDING",
-    "RUNNING",
-    "WAITING_LIMIT",
-    "COMPLETED",
-    "FAILED",
-}
+STATUSES = set(TASK_STATUSES)
 
 
 def utc_now() -> dt.datetime:
@@ -115,6 +114,13 @@ def connect() -> sqlite3.Connection:
     return sqlite3.connect(DB_PATH)
 
 
+def get_task_service() -> TaskApplicationService:
+    """Build the task service for the currently configured database path."""
+
+    repository = SQLiteTaskRepository(connect=connect, now=iso_now)
+    return TaskApplicationService(repository=repository, now=iso_now)
+
+
 def init_db() -> None:
     """
     Create the task table if needed.
@@ -123,28 +129,7 @@ def init_db() -> None:
     audit table without changing the basic queue behavior.
     """
 
-    with connect() as con:
-        con.execute(
-            """
-            CREATE TABLE IF NOT EXISTS tasks (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                title TEXT NOT NULL,
-                prompt TEXT NOT NULL,
-                workdir TEXT NOT NULL,
-                priority INTEGER NOT NULL DEFAULT 100,
-                status TEXT NOT NULL DEFAULT 'PENDING',
-                session_id TEXT,
-                next_step TEXT,
-                reset_at TEXT,
-                attempts INTEGER NOT NULL DEFAULT 0,
-                max_attempts INTEGER NOT NULL DEFAULT 3,
-                last_error TEXT,
-                output TEXT,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            )
-            """
-        )
+    get_task_service().initialize()
 
 
 def add_task(title: str, prompt: str, workdir: str = ".", priority: int = 100, max_attempts: int = 3) -> None:
@@ -167,19 +152,13 @@ def add_task(title: str, prompt: str, workdir: str = ".", priority: int = 100, m
         None. The function persists the task in SQLite.
     """
 
-    workdir = str(Path(workdir).resolve())
-
-    with connect() as con:
-        con.execute(
-            """
-            INSERT INTO tasks (
-                title, prompt, workdir, priority, status,
-                attempts, max_attempts, created_at, updated_at
-            )
-            VALUES (?, ?, ?, ?, 'PENDING', 0, ?, ?, ?)
-            """,
-            (title, prompt, workdir, priority, max_attempts, iso_now(), iso_now()),
-        )
+    get_task_service().add_task(
+        title=title,
+        prompt=prompt,
+        workdir=workdir,
+        priority=priority,
+        max_attempts=max_attempts,
+    )
 
 
 def list_tasks() -> None:
@@ -190,24 +169,7 @@ def list_tasks() -> None:
         None. This is a CLI presentation helper and writes to stdout.
     """
 
-    with connect() as con:
-        rows = con.execute(
-            """
-            SELECT id, title, status, priority, attempts, reset_at, workdir
-            FROM tasks
-            ORDER BY
-                CASE status
-                    WHEN 'RUNNING' THEN 1
-                    WHEN 'WAITING_LIMIT' THEN 2
-                    WHEN 'PENDING' THEN 3
-                    WHEN 'FAILED' THEN 4
-                    WHEN 'COMPLETED' THEN 5
-                    ELSE 6
-                END,
-                priority ASC,
-                id ASC
-            """
-        ).fetchall()
+    rows = get_task_service().list_tasks()
 
     if not rows:
         print("No tasks found.")
@@ -215,12 +177,12 @@ def list_tasks() -> None:
 
     for row in rows:
         print(
-            f"[{row[0]}] {row[1]} | status={row[2]} | priority={row[3]} "
-            f"| attempts={row[4]} | reset_at={row[5]} | workdir={row[6]}"
+            f"[{row.id}] {row.title} | status={row.status} | priority={row.priority} "
+            f"| attempts={row.attempts} | reset_at={row.reset_at} | workdir={row.workdir}"
         )
 
 
-def get_next_task() -> Optional[sqlite3.Row]:
+def get_next_task() -> Optional[TaskRecord]:
     """
     Return the next runnable task.
 
@@ -229,29 +191,11 @@ def get_next_task() -> Optional[sqlite3.Row]:
     - WAITING_LIMIT with reset_at already passed.
 
     Returns:
-        sqlite3.Row for the next runnable task, or None when the worker should
+        TaskRecord for the next runnable task, or None when the worker should
         sleep or exit.
     """
 
-    now = iso_now()
-
-    with connect() as con:
-        con.row_factory = sqlite3.Row
-        return con.execute(
-            """
-            SELECT *
-            FROM tasks
-            WHERE status = 'PENDING'
-               OR (
-                    status = 'WAITING_LIMIT'
-                    AND reset_at IS NOT NULL
-                    AND reset_at <= ?
-               )
-            ORDER BY priority ASC, id ASC
-            LIMIT 1
-            """,
-            (now,),
-        ).fetchone()
+    return get_task_service().next_runnable_task()
 
 
 def update_task(task_id: int, **fields: object) -> None:
@@ -269,16 +213,8 @@ def update_task(task_id: int, **fields: object) -> None:
         None. Empty updates are ignored.
     """
 
-    if not fields:
-        return
-
-    fields["updated_at"] = iso_now()
-    columns = ", ".join(f"{key} = ?" for key in fields.keys())
-    values = list(fields.values())
-    values.append(task_id)
-
-    with connect() as con:
-        con.execute(f"UPDATE tasks SET {columns} WHERE id = ?", values)
+    if fields:
+        get_task_service().update_task(task_id, **fields)
 
 
 def extract_session_id(text: str) -> Optional[str]:
@@ -366,7 +302,7 @@ def looks_like_usage_limit(text: str) -> bool:
     return any(marker in lower for marker in markers)
 
 
-def build_codex_command(task: sqlite3.Row) -> list[str]:
+def build_codex_command(task: TaskRecord) -> list[str]:
     """
     Build the Codex CLI command for a task.
 
@@ -388,13 +324,13 @@ def build_codex_command(task: sqlite3.Row) -> list[str]:
     return [CODEX_BIN, "exec", task["prompt"]]
 
 
-def task_to_dict(task: sqlite3.Row) -> dict:
+def task_to_dict(task: TaskRecord) -> dict:
     """
-    Convert sqlite3.Row into a plain dict for modules that do not know SQLite.
+    Convert a task record into a plain dictionary for legacy runner adapters.
 
     Args:
         task:
-            SQLite row returned by the queue layer.
+            Transport-neutral task returned by the queue layer.
 
     Returns:
         Plain dictionary preserving all row keys.
@@ -403,7 +339,7 @@ def task_to_dict(task: sqlite3.Row) -> dict:
     return {key: task[key] for key in task.keys()}
 
 
-def finish_task_from_output(task: sqlite3.Row, output: str, returncode: int) -> None:
+def finish_task_from_output(task: TaskRecord, output: str, returncode: int) -> None:
     """
     Convert runner output into final queue state.
 
@@ -476,7 +412,7 @@ def finish_task_from_output(task: sqlite3.Row, output: str, returncode: int) -> 
     print(f"Task #{task_id} failed permanently.")
 
 
-def run_codex_subprocess(task: sqlite3.Row) -> None:
+def run_codex_subprocess(task: TaskRecord) -> None:
     """
     Run one task using classic subprocess.run().
 
@@ -603,7 +539,7 @@ def telegram_check(discover_chat_id: bool, send_test: bool, message: str, poll_t
         print(f"Telegram test message sent: message_id={message_id}")
 
 
-def run_codex_pty(task: sqlite3.Row, telegram_enabled: bool, telegram_verbosity: str, echo_output: bool) -> None:
+def run_codex_pty(task: TaskRecord, telegram_enabled: bool, telegram_verbosity: str, echo_output: bool) -> None:
     """
     Run one task using the PTY approval bridge.
 
@@ -651,7 +587,7 @@ def run_codex_pty(task: sqlite3.Row, telegram_enabled: bool, telegram_verbosity:
         print(f"Task #{task_id} PTY error: {exc}")
 
 
-def run_task(task: sqlite3.Row, runner_mode: str, telegram_enabled: bool, telegram_verbosity: str, echo_output: bool) -> None:
+def run_task(task: TaskRecord, runner_mode: str, telegram_enabled: bool, telegram_verbosity: str, echo_output: bool) -> None:
     """
     Dispatch a task to the selected runner implementation.
 

@@ -244,6 +244,38 @@ class TelegramControlTests(unittest.TestCase):
         self.assertEqual(row[1], "Do the work.")
         self.assertEqual(row[2], str(Path(self.tmp.name).resolve()))
 
+    def test_bot_uses_injected_task_service_for_queue_operations(self):
+        """Telegram routing should not discover persistence through globals."""
+
+        task_service = codex_queue.get_task_service()
+        bridge = FakeBridge(chat_id=123)
+        bot = TelegramControlBot(
+            bridge=bridge,
+            config=TelegramControlConfig(allowed_workdirs=[self.tmp.name]),
+            task_service=task_service,
+        )
+
+        with mock.patch.object(
+            codex_queue,
+            "get_task_service",
+            side_effect=AssertionError("global service lookup"),
+        ):
+            add_response = bot.handle_update(
+                {
+                    "message": {
+                        "chat": {"id": 123},
+                        "text": '/add --title "Injected" --workdir '
+                        f'{self.tmp.name} --prompt "Use the injected service."',
+                    }
+                }
+            )
+            status_response = bot.handle_update(
+                {"message": {"chat": {"id": 123}, "text": "/status"}}
+            )
+
+        self.assertEqual(add_response, "Task added: Injected")
+        self.assertIn("PENDING: 1", status_response)
+
     def test_handle_add_message_rejects_disallowed_workdir(self):
         """Remote users must not enqueue tasks outside allowed workdir roots."""
 
