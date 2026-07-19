@@ -58,6 +58,8 @@ DEFAULT_VOICE_MAX_DURATION_SECONDS = 300
 MAX_TELEGRAM_TASK_LIMIT = 50
 SQLITE_INTEGER_MIN = -(2**63)
 SQLITE_INTEGER_MAX = 2**63 - 1
+DEFAULT_INTERACTIVE_STATE_TTL_SECONDS = 15 * 60
+DEFAULT_INTERACTIVE_STATE_MAX_ENTRIES = 100
 
 
 @dataclass(frozen=True)
@@ -130,6 +132,8 @@ class TelegramControlConfig:
     voice_debug: bool = False
     voice_max_file_bytes: int = DEFAULT_TELEGRAM_FILE_MAX_BYTES
     voice_max_duration_seconds: int = DEFAULT_VOICE_MAX_DURATION_SECONDS
+    interactive_state_ttl_seconds: int = DEFAULT_INTERACTIVE_STATE_TTL_SECONDS
+    interactive_state_max_entries: int = DEFAULT_INTERACTIVE_STATE_MAX_ENTRIES
     workdir_choices: dict[str, str] = field(default_factory=dict)
 
 
@@ -189,6 +193,15 @@ class AddWizardState:
     priority: int = 100
     prompt: Optional[str] = None
     phase: str = "workdir"
+    created_at: float = 0.0
+
+
+@dataclass(frozen=True)
+class PendingVoiceLearn:
+    """One expiring voice transcript candidate offered to inline learning."""
+
+    phrase: str
+    created_at: float
 
 
 class TelegramControlError(ValueError):
@@ -1017,6 +1030,7 @@ class TelegramControlBot:
         bridge: TelegramApprovalBridge,
         config: TelegramControlConfig,
         voice_transcriber: Optional[VoiceTranscriber] = None,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         """
         Initialize the Telegram control bot.
@@ -1026,6 +1040,10 @@ class TelegramControlBot:
                 Telegram bridge used for polling and replies.
             config:
                 Control runtime configuration.
+            voice_transcriber:
+                Optional local speech-to-text provider.
+            clock:
+                Monotonic clock used to expire transient interaction state.
 
         Returns:
             None.
@@ -1054,11 +1072,14 @@ class TelegramControlBot:
             voice_debug=config.voice_debug,
             voice_max_file_bytes=config.voice_max_file_bytes,
             voice_max_duration_seconds=config.voice_max_duration_seconds,
+            interactive_state_ttl_seconds=config.interactive_state_ttl_seconds,
+            interactive_state_max_entries=config.interactive_state_max_entries,
             workdir_choices={label: str(Path(path).expanduser().resolve()) for label, path in workdir_choices.items()},
         )
         self.voice_transcriber = voice_transcriber
+        self.clock = clock
         self.worker_state = WorkerState()
-        self.pending_voice_learns: dict[str, str] = {}
+        self.pending_voice_learns: dict[str, PendingVoiceLearn] = {}
         self.next_reply_markup: Optional[dict] = None
         self.add_wizards: dict[str, AddWizardState] = {}
         self.active_add_wizard_token: Optional[str] = None
@@ -1166,6 +1187,22 @@ class TelegramControlBot:
             DEFAULT_VOICE_MAX_DURATION_SECONDS,
             "DUREX_VOICE_MAX_DURATION_SECONDS",
         )
+        interactive_state_ttl_seconds = parse_positive_int_setting(
+            os.environ.get(
+                "DUREX_TELEGRAM_INTERACTIVE_STATE_TTL_SECONDS",
+                control_config.get("interactive_state_ttl_seconds"),
+            ),
+            DEFAULT_INTERACTIVE_STATE_TTL_SECONDS,
+            "DUREX_TELEGRAM_INTERACTIVE_STATE_TTL_SECONDS",
+        )
+        interactive_state_max_entries = parse_positive_int_setting(
+            os.environ.get(
+                "DUREX_TELEGRAM_INTERACTIVE_STATE_MAX_ENTRIES",
+                control_config.get("interactive_state_max_entries"),
+            ),
+            DEFAULT_INTERACTIVE_STATE_MAX_ENTRIES,
+            "DUREX_TELEGRAM_INTERACTIVE_STATE_MAX_ENTRIES",
+        )
         voice_command_aliases = load_voice_command_aliases(voice_aliases_file)
 
         bridge = TelegramApprovalBridge(
@@ -1194,6 +1231,8 @@ class TelegramControlBot:
                 voice_debug=voice_debug,
                 voice_max_file_bytes=voice_max_file_bytes,
                 voice_max_duration_seconds=voice_max_duration_seconds,
+                interactive_state_ttl_seconds=interactive_state_ttl_seconds,
+                interactive_state_max_entries=interactive_state_max_entries,
                 workdir_choices=workdir_choices,
             ),
             voice_transcriber=voice_transcriber,
@@ -1227,8 +1266,13 @@ class TelegramControlBot:
             Telegram inline keyboard reply markup.
         """
 
+        self.prune_interactive_state()
+        self.evict_oldest_interactive_entry(self.pending_voice_learns)
         token = secrets.token_urlsafe(8)
-        self.pending_voice_learns[token] = phrase
+        self.pending_voice_learns[token] = PendingVoiceLearn(
+            phrase=phrase,
+            created_at=self.clock(),
+        )
         return {
             "inline_keyboard": [
                 [
@@ -1271,9 +1315,34 @@ class TelegramControlBot:
             Wizard prompt text.
         """
 
+        self.prune_interactive_state()
+        self.evict_oldest_interactive_entry(self.add_wizards)
         token = secrets.token_urlsafe(8)
-        self.add_wizards[token] = AddWizardState(token=token)
+        self.add_wizards[token] = AddWizardState(token=token, created_at=self.clock())
         return self.render_add_workdir_step(token)
+
+    def prune_interactive_state(self) -> None:
+        """Remove expired voice-learning and add-wizard entries."""
+
+        cutoff = self.clock() - self.config.interactive_state_ttl_seconds
+        for token, candidate in list(self.pending_voice_learns.items()):
+            if candidate.created_at <= cutoff:
+                self.pending_voice_learns.pop(token, None)
+        for token, state in list(self.add_wizards.items()):
+            if state.created_at <= cutoff:
+                self.add_wizards.pop(token, None)
+                if self.active_add_wizard_token == token:
+                    self.active_add_wizard_token = None
+
+    def evict_oldest_interactive_entry(self, entries: dict) -> None:
+        """Keep one transient-state collection below its configured capacity."""
+
+        if len(entries) < self.config.interactive_state_max_entries:
+            return
+        oldest_token = min(entries, key=lambda token: entries[token].created_at)
+        entries.pop(oldest_token, None)
+        if entries is self.add_wizards and self.active_add_wizard_token == oldest_token:
+            self.active_add_wizard_token = None
 
     def render_add_workdir_step(self, token: str) -> str:
         """
@@ -1587,9 +1656,11 @@ class TelegramControlBot:
 
         token = parts[1]
         action = normalize_learn_action(parts[2])
-        phrase = self.pending_voice_learns.pop(token, None)
-        if not phrase:
+        self.prune_interactive_state()
+        candidate = self.pending_voice_learns.pop(token, None)
+        if candidate is None:
             raise TelegramControlError("Learn candidate expired. Send the voice command again.")
+        phrase = candidate.phrase
 
         validate_voice_alias_target(action, phrase)
         save_voice_command_alias(self.config.voice_aliases_file, action, phrase)
@@ -1651,6 +1722,7 @@ class TelegramControlBot:
         if len(parts) >= 3 and parts[0] == "durexadd":
             token = parts[1]
             action = parts[2]
+            self.prune_interactive_state()
             state = self.add_wizards.get(token)
             if state is None:
                 raise TelegramControlError("Add wizard expired. Start again with /add-wizard.")
@@ -1947,6 +2019,10 @@ class TelegramControlBot:
         token = self.active_add_wizard_token
         if not token:
             return None
+        self.prune_interactive_state()
+        token = self.active_add_wizard_token
+        if not token:
+            raise TelegramControlError("Add wizard expired. Start again with /add-wizard.")
         state = self.add_wizards.get(token)
         if state is None or state.phase != "prompt":
             self.active_add_wizard_token = None

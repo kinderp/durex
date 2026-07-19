@@ -100,6 +100,8 @@ telegram_control:
     - /lab/durex
   workdir_choices:
     durex: /lab/durex
+  interactive_state_ttl_seconds: 900
+  interactive_state_max_entries: 100
   voice:
     enabled: true
     provider: faster_whisper
@@ -355,6 +357,8 @@ telegram_control:
     - /lab/durex
   workdir_choices:
     durex: /lab/durex
+  interactive_state_ttl_seconds: 900
+  interactive_state_max_entries: 100
   voice:
     enabled: true
     provider: faster_whisper
@@ -363,6 +367,8 @@ telegram_control:
     allowed_languages: [it, en]
     aliases_file: .durex_voice_aliases.json
     debug: false
+    max_file_bytes: 10485760
+    max_duration_seconds: 300
     workdir_aliases:
       durex: /lab/durex
 ```
@@ -391,6 +397,17 @@ Equivalent environment override:
 export DUREX_TELEGRAM_WORKDIR_CHOICES="durex=/lab/durex,project=/path/project"
 ```
 
+### interactive_state_ttl_seconds and interactive_state_max_entries
+
+Daemon-local Learn candidates and add-task wizards expire after 900 seconds and
+retain at most 100 entries per state collection by default. Equivalent
+environment overrides:
+
+```bash
+export DUREX_TELEGRAM_INTERACTIVE_STATE_TTL_SECONDS=900
+export DUREX_TELEGRAM_INTERACTIVE_STATE_MAX_ENTRIES=100
+```
+
 ### voice
 
 Voice settings used by Telegram remote control. Environment overrides:
@@ -403,6 +420,8 @@ export DUREX_VOICE_ALLOWED_LANGUAGES=it,en
 export DUREX_VOICE_WORKDIR_ALIASES="durex=/lab/durex"
 export DUREX_VOICE_ALIASES_FILE=.durex_voice_aliases.json
 export DUREX_VOICE_DEBUG=1
+export DUREX_VOICE_MAX_FILE_BYTES=10485760
+export DUREX_VOICE_MAX_DURATION_SECONDS=300
 ```
 
 Recommended value:

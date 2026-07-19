@@ -57,6 +57,10 @@ telegram_control:
   workdir_choices:
     durex: /lab/durex
 
+  # Inline Learn and add-wizard state expires and remains memory-bounded.
+  interactive_state_ttl_seconds: 900
+  interactive_state_max_entries: 100
+
   voice:
     enabled: false
     provider: faster_whisper

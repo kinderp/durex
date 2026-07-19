@@ -224,6 +224,8 @@ telegram_control:
   workdir_choices:
     durex: /lab/durex
     other: /lab/another-project
+  interactive_state_ttl_seconds: 900
+  interactive_state_max_entries: 100
   voice:
     enabled: true
     provider: faster_whisper

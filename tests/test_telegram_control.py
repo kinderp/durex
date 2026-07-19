@@ -114,6 +114,19 @@ class MappingVoiceTranscriber:
         )
 
 
+class FakeClock:
+    """Controllable monotonic clock for transient-state tests."""
+
+    def __init__(self):
+        self.value = 0.0
+
+    def __call__(self):
+        return self.value
+
+    def advance(self, seconds):
+        self.value += seconds
+
+
 class TelegramControlTests(unittest.TestCase):
     """Regression coverage for Telegram remote-control routing and safety."""
 
@@ -649,6 +662,68 @@ class TelegramControlTests(unittest.TestCase):
         self.assertEqual(response, "Learned voice alias: 'status' -> status")
         self.assertEqual(load_voice_command_aliases(alias_file)["status"], "status")
 
+    def test_voice_learn_candidate_expires(self):
+        """A stale Learn button should be rejected after the configured lifetime."""
+
+        clock = FakeClock()
+        bridge = FakeBridge(chat_id=123)
+        bot = TelegramControlBot(
+            bridge=bridge,
+            config=TelegramControlConfig(
+                allowed_workdirs=[self.tmp.name],
+                interactive_state_ttl_seconds=10,
+            ),
+            clock=clock,
+        )
+        keyboard = bot.build_voice_learn_keyboard("abbia walker")
+        callback = keyboard["inline_keyboard"][0][0]["callback_data"]
+        clock.advance(10)
+
+        response = bot.handle_update(
+            {
+                "callback_query": {
+                    "id": "callback-expired-learn",
+                    "message": {"chat": {"id": 123}},
+                    "data": callback,
+                }
+            }
+        )
+
+        self.assertIn("Learn candidate expired", response)
+        self.assertEqual(bot.pending_voice_learns, {})
+
+    def test_voice_learn_capacity_evicts_oldest_candidate(self):
+        """Learn candidate storage should retain only the configured capacity."""
+
+        clock = FakeClock()
+        bridge = FakeBridge(chat_id=123)
+        bot = TelegramControlBot(
+            bridge=bridge,
+            config=TelegramControlConfig(
+                allowed_workdirs=[self.tmp.name],
+                interactive_state_max_entries=2,
+            ),
+            clock=clock,
+        )
+        first = bot.build_voice_learn_keyboard("first phrase")["inline_keyboard"][0][0]["callback_data"]
+        clock.advance(1)
+        bot.build_voice_learn_keyboard("second phrase")
+        clock.advance(1)
+        bot.build_voice_learn_keyboard("third phrase")
+
+        response = bot.handle_update(
+            {
+                "callback_query": {
+                    "id": "callback-evicted-learn",
+                    "message": {"chat": {"id": 123}},
+                    "data": first,
+                }
+            }
+        )
+
+        self.assertIn("Learn candidate expired", response)
+        self.assertEqual(len(bot.pending_voice_learns), 2)
+
     def test_tasks_command_sends_task_buttons_and_detail_callback(self):
         """Task list should expose inline buttons for task details."""
 
@@ -823,6 +898,67 @@ class TelegramControlTests(unittest.TestCase):
 
         self.assertIn("Prompt: leggi il readme", confirm_response)
 
+    def test_add_wizard_callback_expires(self):
+        """A stale wizard button should be rejected after the configured lifetime."""
+
+        clock = FakeClock()
+        bridge = FakeBridge(chat_id=123)
+        bot = TelegramControlBot(
+            bridge=bridge,
+            config=TelegramControlConfig(
+                allowed_workdirs=[self.tmp.name],
+                workdir_choices={"temp": self.tmp.name},
+                interactive_state_ttl_seconds=10,
+            ),
+            clock=clock,
+        )
+        bot.handle_update({"message": {"chat": {"id": 123}, "text": "/add-wizard"}})
+        callback = bridge.reply_markups[-1]["inline_keyboard"][0][0]["callback_data"]
+        clock.advance(10)
+
+        response = bot.handle_update(
+            {
+                "callback_query": {
+                    "id": "callback-expired-wizard",
+                    "message": {"chat": {"id": 123}},
+                    "data": callback,
+                }
+            }
+        )
+
+        self.assertIn("Add wizard expired", response)
+        self.assertEqual(bot.add_wizards, {})
+
+    def test_add_wizard_remains_active_before_expiry(self):
+        """A wizard callback before the deadline should continue normally."""
+
+        clock = FakeClock()
+        bridge = FakeBridge(chat_id=123)
+        bot = TelegramControlBot(
+            bridge=bridge,
+            config=TelegramControlConfig(
+                allowed_workdirs=[self.tmp.name],
+                workdir_choices={"temp": self.tmp.name},
+                interactive_state_ttl_seconds=10,
+            ),
+            clock=clock,
+        )
+        bot.handle_update({"message": {"chat": {"id": 123}, "text": "/add-wizard"}})
+        callback = bridge.reply_markups[-1]["inline_keyboard"][0][0]["callback_data"]
+        clock.advance(9)
+
+        response = bot.handle_update(
+            {
+                "callback_query": {
+                    "id": "callback-active-wizard",
+                    "message": {"chat": {"id": 123}},
+                    "data": callback,
+                }
+            }
+        )
+
+        self.assertIn("Current priority: 100", response)
+
     def test_auto_voice_prompt_accepts_italian_detection(self):
         """Automatic wizard prompts should accept detected Italian without a hint."""
 
@@ -974,6 +1110,8 @@ class TelegramControlTests(unittest.TestCase):
             "\n".join(
                 [
                     "telegram_control:",
+                    "  interactive_state_ttl_seconds: 30",
+                    "  interactive_state_max_entries: 10",
                     "  voice:",
                     "    enabled: false",
                     "    debug: true",
@@ -994,6 +1132,8 @@ class TelegramControlTests(unittest.TestCase):
                 "DUREX_VOICE_DEBUG": "0",
                 "DUREX_VOICE_MAX_FILE_BYTES": "2048",
                 "DUREX_VOICE_MAX_DURATION_SECONDS": "60",
+                "DUREX_TELEGRAM_INTERACTIVE_STATE_TTL_SECONDS": "45",
+                "DUREX_TELEGRAM_INTERACTIVE_STATE_MAX_ENTRIES": "20",
             },
             clear=True,
         ):
@@ -1003,6 +1143,8 @@ class TelegramControlTests(unittest.TestCase):
         self.assertFalse(bot.config.voice_debug)
         self.assertEqual(bot.config.voice_max_file_bytes, 2048)
         self.assertEqual(bot.config.voice_max_duration_seconds, 60)
+        self.assertEqual(bot.config.interactive_state_ttl_seconds, 45)
+        self.assertEqual(bot.config.interactive_state_max_entries, 20)
 
     def test_failed_voice_command_can_be_learned_with_inline_button(self):
         """Voice failures should offer inline buttons that save the selected alias."""
