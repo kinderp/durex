@@ -30,6 +30,7 @@ APPROVAL_CALLBACK_ACTIONS = frozenset(
     }
 )
 DEFAULT_DEDUPLICATION_ENTRIES = 1024
+MAX_APPROVAL_CALLBACK_API_CALLS = 2
 _standalone_dispatcher_lock = threading.Lock()
 
 
@@ -419,6 +420,8 @@ class TelegramUpdateDispatcher:
 
                 retry_delay = self.retry_base_seconds
                 for update in updates:
+                    if self._stop_event.is_set():
+                        break
                     try:
                         self.dispatch_update(update)
                     except TelegramBridgeError as exc:
@@ -496,7 +499,11 @@ class StandaloneTelegramApprovalRuntime:
             shutdown_timeout = max(
                 2,
                 self.dispatcher.poll_timeout_seconds + 6,
-                DEFAULT_TELEGRAM_API_TIMEOUT_SECONDS + 1,
+                (
+                    DEFAULT_TELEGRAM_API_TIMEOUT_SECONDS
+                    * MAX_APPROVAL_CALLBACK_API_CALLS
+                )
+                + 1,
             )
             self._thread.join(timeout=shutdown_timeout)
             if self._thread.is_alive():

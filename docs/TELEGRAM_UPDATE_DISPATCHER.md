@@ -192,9 +192,10 @@ later command or approval decision that Telegram returned in the same response.
 
 Standalone approval mode uses a dedicated dispatcher thread for the duration of
 the PTY task. Its Bot API socket timeout is derived from the long-poll timeout,
-and shutdown waits beyond both that poll bound and the normal Bot API request
-timeout. This covers a callback acknowledgement or context send that was
-already in flight when the PTY finished. Process ownership is released by the
+and shutdown waits beyond both that poll bound and the longest approval callback
+path: a context send followed by callback acknowledgement. The dispatcher
+finishes an update already in progress but does not start later entries from a
+fetched batch after shutdown is requested. Process ownership is released by the
 dispatcher thread only after it exits. If a transport call outlives the expected
 shutdown bound, another standalone task is rejected instead of creating a
 competing poller.

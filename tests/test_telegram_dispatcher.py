@@ -320,6 +320,23 @@ class TelegramUpdateDispatcherTests(unittest.TestCase):
         )
         self.assertEqual(len(transport.poll_calls), 2)
 
+    def test_stop_does_not_start_later_updates_in_fetched_batch(self):
+        first = {"update_id": 1, "message": {"chat": {"id": 123}, "text": "/status"}}
+        second = {"update_id": 2, "message": {"chat": {"id": 123}, "text": "/tasks"}}
+        transport = FakeApprovalTransport([[first, second]])
+        routed = []
+        dispatcher = self.make_dispatcher(transport, handler=None)
+
+        def stop_after_first(update):
+            routed.append(update)
+            dispatcher.stop()
+
+        dispatcher.update_handler = stop_after_first
+        dispatcher.run_forever()
+
+        self.assertEqual(routed, [first])
+        self.assertEqual(len(transport.poll_calls), 1)
+
     def test_callback_parser_rejects_invalid_chat_shape(self):
         callback = make_callback("active-id", "approve")["callback_query"]
         callback["message"]["chat"]["id"] = None
@@ -384,7 +401,7 @@ class TelegramApprovalGatewayTests(unittest.TestCase):
 class StandaloneTelegramApprovalRuntimeTests(unittest.TestCase):
     """Verify process-level standalone polling ownership."""
 
-    def test_close_wait_covers_normal_bot_api_request_timeout(self):
+    def test_close_wait_covers_complete_callback_dispatch(self):
         runtime = StandaloneTelegramApprovalRuntime(FakeApprovalTransport())
         thread = mock.Mock()
         thread.is_alive.return_value = False
@@ -393,7 +410,7 @@ class StandaloneTelegramApprovalRuntimeTests(unittest.TestCase):
         runtime.close()
 
         thread.join.assert_called_once_with(
-            timeout=DEFAULT_TELEGRAM_API_TIMEOUT_SECONDS + 1
+            timeout=(DEFAULT_TELEGRAM_API_TIMEOUT_SECONDS * 2) + 1
         )
 
     def test_standalone_dispatcher_requests_only_callback_updates(self):
