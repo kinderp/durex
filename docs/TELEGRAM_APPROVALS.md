@@ -226,7 +226,8 @@ Button handling details:
 
 ## ApprovalRequest payload
 
-The Telegram bridge should receive a normalized request object.
+The PTY runner creates a normalized request object. The approval gateway uses
+the same shape for a wire copy sent to the Telegram transport.
 
 ```text
 ApprovalRequest {
@@ -246,7 +247,7 @@ Field meanings:
 
 | Field | Meaning |
 |---|---|
-| `request_id` | Unique local approval request identifier |
+| `request_id` | Stable detector fingerprint in the PTY request; one-use callback token in the wire copy |
 | `task_id` | Current queue task id |
 | `task_title` | Human-readable task title |
 | `workdir` | Directory where Codex is working |
@@ -258,14 +259,16 @@ Field meanings:
 
 ### How the request is built
 
-The PTY runner receives an `ApprovalRequest` from `approval_detector.py`. It then
-adds task metadata before sending the message to Telegram. That conversion is
-done so the phone message can show a useful task title, task id, working
-directory, detected command, reason, and terminal context.
+The PTY runner receives an `ApprovalRequest` from `approval_detector.py` and
+adds task metadata before passing it to `TelegramApprovalGateway`. That local
+request carries the stable detector `request_id`, which suppresses repeated
+detection and remains useful in local audit events.
 
-`request_id` is important because Telegram callbacks are asynchronous. When a
-callback arrives, the bridge uses this id to confirm that the button belongs to
-the approval request currently being awaited.
+Before sending the message, the gateway creates a wire copy and replaces
+`request_id` with a random one-use callback token. The transport embeds only
+that token in `durex:<token>:<action>` callback data. The dispatcher validates
+the token and resolves the broker; after the final decision, the gateway
+restores the stable detector `request_id` before returning to the PTY runner.
 
 `command` can be missing. Terminal parsing is heuristic, so the bridge must
 still support requests where the command cannot be confidently extracted. In
@@ -280,7 +283,7 @@ not a full data-loss-prevention system.
 
 ## ApprovalDecision payload
 
-The Telegram bridge should return a normalized decision object.
+The broker-backed approval provider returns a normalized decision object.
 
 ```text
 ApprovalDecision {
@@ -305,9 +308,9 @@ timeout
 
 ### How the decision is used
 
-The Telegram bridge returns a decision object; it does not write to Codex
-itself. The PTY runner is responsible for converting the action into local
-process behavior.
+The approval provider returns a decision object with the stable detector
+`request_id`; it does not write to Codex itself. The PTY runner is responsible
+for converting the action into local process behavior.
 
 `approve` maps to terminal input `y\n`.
 

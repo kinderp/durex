@@ -86,7 +86,9 @@ class TelegramApprovalRequest:
 
     Attributes:
         request_id:
-            Detector fingerprint used to correlate callbacks.
+            Stable detector fingerprint in the runner-facing request. The
+            approval gateway replaces it with a one-use callback token in the
+            wire copy passed to this transport.
         task_id:
             Queue task id, if the request came from codex_queue.py.
         task_title:
@@ -518,7 +520,7 @@ class TelegramApprovalBridge:
             f"Approve this action?"
         )
 
-    def build_inline_keyboard(self, request_id: str) -> dict[str, Any]:
+    def build_inline_keyboard(self, callback_token: str) -> dict[str, Any]:
         """
         Build Telegram inline keyboard payload.
 
@@ -526,8 +528,8 @@ class TelegramApprovalBridge:
         data length.
 
         Args:
-            request_id:
-                Approval request fingerprint embedded into callback data.
+            callback_token:
+                One-use approval token embedded into callback data.
 
         Returns:
             Telegram ``reply_markup`` payload with approval actions.
@@ -536,12 +538,12 @@ class TelegramApprovalBridge:
         return {
             "inline_keyboard": [
                 [
-                    {"text": "Approve", "callback_data": f"durex:{request_id}:approve"},
-                    {"text": "Deny", "callback_data": f"durex:{request_id}:deny"},
+                    {"text": "Approve", "callback_data": f"durex:{callback_token}:approve"},
+                    {"text": "Deny", "callback_data": f"durex:{callback_token}:deny"},
                 ],
                 [
-                    {"text": "Show context", "callback_data": f"durex:{request_id}:show_context"},
-                    {"text": "Stop task", "callback_data": f"durex:{request_id}:stop"},
+                    {"text": "Show context", "callback_data": f"durex:{callback_token}:show_context"},
+                    {"text": "Stop task", "callback_data": f"durex:{callback_token}:stop"},
                 ],
             ]
         }
