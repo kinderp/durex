@@ -14,8 +14,10 @@ from telegram_control import (
     TelegramControlError,
     TelegramControlBot,
     TelegramControlConfig,
+    load_voice_command_aliases,
     parse_add_command,
     path_is_allowed,
+    save_voice_command_alias,
 )
 from voice_transcriber import StaticVoiceTranscriber, TranscriptionResult
 
@@ -549,6 +551,20 @@ class TelegramControlTests(unittest.TestCase):
         self.assertIn("Durex status", voice_response)
         self.assertIn('"status"', Path(alias_file).read_text(encoding="utf-8"))
         self.assertIn("abbia walker", Path(alias_file).read_text(encoding="utf-8"))
+
+    def test_reassigned_voice_alias_remains_stable_after_reload(self):
+        """Relearning a phrase should replace its previous persisted action."""
+
+        alias_file = str(Path(self.tmp.name) / "voice_aliases.json")
+
+        save_voice_command_alias(alias_file, "status", "same phrase")
+        save_voice_command_alias(alias_file, "run", "same phrase")
+
+        persisted = Path(alias_file).read_text(encoding="utf-8")
+        reloaded = load_voice_command_aliases(alias_file)
+        self.assertEqual(persisted.count("same phrase"), 1)
+        self.assertNotIn('"status"', persisted)
+        self.assertEqual(reloaded["same phrase"], "run")
 
     def test_learn_command_rejects_add_alias(self):
         """Learned aliases should not target structured add commands."""

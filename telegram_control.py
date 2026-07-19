@@ -676,9 +676,12 @@ def save_voice_command_alias(path: str, action: str, phrase: str) -> None:
                 if isinstance(phrases, list):
                     data[canonical] = [normalize_transcript(str(item)) for item in phrases if normalize_transcript(str(item))]
 
-    data.setdefault(action, [])
-    if phrase not in data[action]:
-        data[action].append(phrase)
+    for existing_action in list(data):
+        data[existing_action] = [item for item in data[existing_action] if item != phrase]
+        if not data[existing_action]:
+            data.pop(existing_action)
+
+    data.setdefault(action, []).append(phrase)
 
     alias_path.parent.mkdir(parents=True, exist_ok=True)
     alias_path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")

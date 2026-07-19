@@ -277,6 +277,10 @@ You can also teach Durex with a text command:
 /learn run abbia walker
 ```
 
+Learning the same normalized phrase again replaces its previous action. The
+mapping therefore remains identical before and after restarting Telegram
+control.
+
 Learned aliases can target only simple remote-control actions:
 
 ```text
