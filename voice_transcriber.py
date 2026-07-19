@@ -115,6 +115,10 @@ class FasterWhisperTranscriber(VoiceTranscriber):
                 "Voice transcription requires faster-whisper. Install it with: "
                 "pip install -r requirements-voice.txt"
             ) from exc
+        except Exception as exc:
+            raise VoiceTranscriptionError(
+                f"Could not load the faster-whisper runtime: {exc}"
+            ) from exc
 
         try:
             self._model = WhisperModel(self.model_name, device=self.device, compute_type=self.compute_type)

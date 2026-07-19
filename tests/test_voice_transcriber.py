@@ -59,6 +59,25 @@ class VoiceTranscriberTests(unittest.TestCase):
             ):
                 transcriber.transcribe("/tmp/example.ogg", language="it")
 
+    def test_native_import_failure_uses_transcription_error(self):
+        """Binary runtime import failures should remain inside the daemon boundary."""
+
+        real_import = __import__
+
+        def failing_import(name, *args, **kwargs):
+            if name == "faster_whisper":
+                raise OSError("native library unavailable")
+            return real_import(name, *args, **kwargs)
+
+        with mock.patch("builtins.__import__", side_effect=failing_import):
+            transcriber = FasterWhisperTranscriber(model_name="base")
+
+            with self.assertRaisesRegex(
+                VoiceTranscriptionError,
+                "Could not load the faster-whisper runtime: native library unavailable",
+            ):
+                transcriber.transcribe("/tmp/example.ogg", language="it")
+
 
 if __name__ == "__main__":
     unittest.main()
