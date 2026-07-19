@@ -2,6 +2,7 @@
 
 import sqlite3
 import tempfile
+import threading
 from pathlib import Path
 import unittest
 
@@ -41,6 +42,14 @@ class TaskApplicationServiceTests(unittest.TestCase):
         )
         return TaskApplicationService(repository, now=lambda: self.now)
 
+    def claim(self, worker_id="worker-1", lease_id="lease-1", run_id="run-1"):
+        return self.service.claim_next_task(
+            worker_id=worker_id,
+            lease_id=lease_id,
+            run_id=run_id,
+            lease_expires_at="2026-07-19T12:01:00+00:00",
+        )
+
     def test_next_runnable_orders_by_priority_then_identifier(self):
         """Lower priority values win and insertion order breaks ties."""
 
@@ -65,6 +74,157 @@ class TaskApplicationServiceTests(unittest.TestCase):
         self.assertIsNone(self.service.next_runnable_task())
         self.now = "2026-07-19T12:30:00+00:00"
         self.assertEqual(self.service.next_runnable_task().id, task_id)
+
+    def test_claim_is_atomic_across_concurrent_workers(self):
+        """Exactly one worker can acquire the only runnable task."""
+
+        task_id = self.add_task("one owner")
+        barrier = threading.Barrier(2)
+        claims = []
+        errors = []
+
+        def run_claim(worker):
+            try:
+                barrier.wait()
+                claims.append(
+                    self.service.claim_next_task(
+                        worker_id=worker,
+                        lease_id=f"lease-{worker}",
+                        run_id=f"run-{worker}",
+                        lease_expires_at="2026-07-19T12:01:00+00:00",
+                    )
+                )
+            except Exception as exc:  # pragma: no cover - asserted below
+                errors.append(exc)
+
+        threads = [
+            threading.Thread(target=run_claim, args=(f"worker-{i}",))
+            for i in range(2)
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        self.assertEqual(errors, [])
+        acquired = [claim for claim in claims if claim is not None]
+        self.assertEqual(len(acquired), 1)
+        self.assertEqual(acquired[0].task.id, task_id)
+        self.assertEqual(self.service.task_detail(task_id).attempts, 1)
+
+    def test_claim_renews_and_finishes_only_with_current_fence(self):
+        """Lease identity and epoch fence every mutable ownership operation."""
+
+        task_id = self.add_task("fenced")
+        claim = self.claim()
+
+        self.assertTrue(
+            self.service.heartbeat_task_claim(
+                claim,
+                lease_expires_at="2026-07-19T12:02:00+00:00",
+            )
+        )
+        stale_claim = claim.__class__(
+            task=claim.task,
+            worker_id=claim.worker_id,
+            lease_id="stale-lease",
+            run_id=claim.run_id,
+            lease_epoch=claim.lease_epoch,
+            lease_expires_at=claim.lease_expires_at,
+        )
+        self.assertFalse(
+            self.service.finish_task_claim(
+                stale_claim,
+                "COMPLETED",
+                "stale completion",
+            )
+        )
+        self.assertTrue(
+            self.service.finish_task_claim(
+                claim,
+                "COMPLETED",
+                "runner completed",
+                output="done",
+            )
+        )
+
+        task = self.service.task_detail(task_id)
+        self.assertEqual(task.status, "COMPLETED")
+        self.assertEqual(task.terminal_reason, "runner completed")
+        self.assertEqual(task.output, "done")
+        self.assertIsNone(task.lease_expires_at)
+
+    def test_expired_claim_recovery_fences_stale_owner_after_reassignment(self):
+        """A recovered lease cannot mutate a manually retried task generation."""
+
+        task_id = self.add_task("recover")
+        stale = self.claim()
+        self.now = "2026-07-19T12:01:00+00:00"
+
+        self.assertEqual(self.service.recover_stale_task_claims(), [task_id])
+        recovered = self.service.task_detail(task_id)
+        self.assertEqual(recovered.status, "FAILED")
+        self.assertIn("lease expired", recovered.last_error)
+
+        self.service.update_task(task_id, status="PENDING")
+        current = self.service.claim_next_task(
+            worker_id="worker-2",
+            lease_id="lease-2",
+            run_id="run-2",
+            lease_expires_at="2026-07-19T12:02:00+00:00",
+        )
+        self.assertEqual(current.lease_epoch, stale.lease_epoch + 1)
+        self.assertFalse(
+            self.service.heartbeat_task_claim(
+                stale,
+                lease_expires_at="2026-07-19T12:03:00+00:00",
+            )
+        )
+        self.assertFalse(
+            self.service.request_task_cancellation(stale, "stale request")
+        )
+        self.assertFalse(
+            self.service.finish_task_claim(stale, "FAILED", "stale failure")
+        )
+        self.assertEqual(self.service.task_detail(task_id).lease_id, "lease-2")
+
+    def test_claim_accepts_waiting_limit_only_after_reset(self):
+        """Atomic claiming preserves the existing usage-limit gate."""
+
+        task_id = self.add_task("limited claim")
+        self.service.update_task(
+            task_id,
+            status="WAITING_LIMIT",
+            reset_at="2026-07-19T12:30:00+00:00",
+        )
+
+        self.assertIsNone(self.claim())
+        self.now = "2026-07-19T12:30:00+00:00"
+        claim = self.service.claim_next_task(
+            worker_id="worker-1",
+            lease_id="lease-1",
+            run_id="run-1",
+            lease_expires_at="2026-07-19T12:31:00+00:00",
+        )
+        self.assertEqual(claim.task.id, task_id)
+        self.assertEqual(claim.task.status, "RUNNING")
+        self.assertEqual(claim.task.attempts, 1)
+
+    def test_cancellation_request_is_fenced_and_idempotent(self):
+        """Only the active claim records one cancellation request."""
+
+        task_id = self.add_task("cancel")
+        claim = self.claim()
+
+        self.assertTrue(
+            self.service.request_task_cancellation(claim, "operator request")
+        )
+        self.assertFalse(
+            self.service.request_task_cancellation(claim, "duplicate request")
+        )
+        task = self.service.task_detail(task_id)
+        self.assertEqual(task.cancel_requested_at, self.now)
+        self.assertEqual(task.terminal_reason, "operator request")
 
     def test_transition_is_atomic_against_expected_status(self):
         """A stale caller cannot overwrite a task after its status changed."""
@@ -286,6 +446,55 @@ class TaskApplicationServiceTests(unittest.TestCase):
             }
         self.assertIn("task_runs", tables)
         self.assertIn("task_output_chunks", tables)
+
+    def test_initialize_migrates_pre_supervisor_task_schema_in_place(self):
+        """Existing queues gain lease columns without losing task data."""
+
+        with sqlite3.connect(self.db_path) as con:
+            con.execute(
+                """
+                CREATE TABLE tasks (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    title TEXT NOT NULL,
+                    prompt TEXT NOT NULL,
+                    workdir TEXT NOT NULL,
+                    priority INTEGER NOT NULL DEFAULT 100,
+                    status TEXT NOT NULL DEFAULT 'PENDING',
+                    session_id TEXT,
+                    next_step TEXT,
+                    reset_at TEXT,
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    max_attempts INTEGER NOT NULL DEFAULT 3,
+                    last_error TEXT,
+                    output TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            con.execute(
+                """
+                INSERT INTO tasks (
+                    title, prompt, workdir, priority, status, attempts,
+                    max_attempts, created_at, updated_at
+                )
+                VALUES ('legacy', 'legacy prompt', ?, 4, 'PENDING', 0, 3, ?, ?)
+                """,
+                (self.tmp.name, self.now, self.now),
+            )
+
+        self.service.initialize()
+
+        task = self.service.task_detail(1)
+        self.assertEqual(task.title, "legacy")
+        self.assertEqual(task.lease_epoch, 0)
+        self.assertIsNone(task.lease_id)
+        with sqlite3.connect(self.db_path) as con:
+            indexes = {
+                row[1]
+                for row in con.execute("PRAGMA index_list(tasks)").fetchall()
+            }
+        self.assertIn("tasks_status_lease_idx", indexes)
 
 
 if __name__ == "__main__":
