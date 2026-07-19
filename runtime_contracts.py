@@ -93,7 +93,9 @@ class WorkerSupervisor(Protocol):
 class TelegramTransportConfig(Protocol):
     """Authorization settings exposed by a Telegram transport."""
 
-    allowed_chat_id: int
+    @property
+    def allowed_chat_id(self) -> int:
+        """Return the only chat authorized to control Durex."""
 
 
 class TelegramTransport(Protocol):

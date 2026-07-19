@@ -52,6 +52,7 @@ class RuntimeContractTests(unittest.TestCase):
         """The protocol should not permit replacing bridge-owned config."""
 
         config_property = TelegramTransport.__dict__["config"]
+        chat_id_property = TelegramTransportConfig.__dict__["allowed_chat_id"]
 
         self.assertIsInstance(config_property, property)
         self.assertIsNone(config_property.fset)
@@ -59,6 +60,9 @@ class RuntimeContractTests(unittest.TestCase):
             get_type_hints(config_property.fget)["return"],
             TelegramTransportConfig,
         )
+        self.assertIsInstance(chat_id_property, property)
+        self.assertIsNone(chat_id_property.fset)
+        self.assertIs(get_type_hints(chat_id_property.fget)["return"], int)
 
 
 if __name__ == "__main__":
