@@ -39,6 +39,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
+from http import client
 import json
 import os
 from pathlib import Path
@@ -374,7 +375,7 @@ class TelegramApprovalBridge:
         try:
             with request.urlopen(req, timeout=request_timeout) as response:
                 data = json.loads(response.read().decode("utf-8"))
-        except (error.URLError, OSError) as exc:
+        except (error.URLError, OSError, client.HTTPException) as exc:
             raise TelegramBridgeError(f"Telegram API request failed: {exc}") from exc
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise TelegramBridgeError(f"Telegram API returned malformed JSON: {exc}") from exc

@@ -1,5 +1,6 @@
 """Tests for Telegram transport file handling."""
 
+from http.client import IncompleteRead
 from io import BytesIO
 import tempfile
 from pathlib import Path
@@ -113,6 +114,21 @@ class TelegramBridgeDownloadTests(unittest.TestCase):
             ):
                 with self.assertRaises(TelegramBridgeError):
                     self.bridge.api_call("getUpdates", {})
+
+    def test_api_call_normalizes_truncated_http_read(self):
+        """Incomplete HTTP bodies must remain retryable bridge failures."""
+
+        response = mock.MagicMock()
+        response.__enter__.return_value.read.side_effect = IncompleteRead(
+            b'{"ok": true',
+            4,
+        )
+        with mock.patch(
+            "telegram_bridge.request.urlopen",
+            return_value=response,
+        ):
+            with self.assertRaisesRegex(TelegramBridgeError, "request failed"):
+                self.bridge.api_call("getUpdates", {})
 
     def test_poll_updates_rejects_malformed_batch_before_advancing_offset(self):
         """One malformed update must not partially acknowledge its batch."""
