@@ -24,6 +24,10 @@ Some diagrams include function names from the current code. `run_task()`
 dispatches between `run_codex_subprocess()` for non-interactive execution and
 `run_codex_pty()` for PTY-based interactive execution.
 
+Both wrappers create a `PersistentRunnerEventSink`. Durex's internal typed
+runner events are implemented now; the future Codex JSON event transport in
+section 9 is a separate concept.
+
 ---
 
 ## 1. Normal non-interactive task execution
@@ -34,9 +38,10 @@ sequenceDiagram
     autonumber
     participant User
     participant CLI as codex_queue.py CLI
-    participant DB as SQLite tasks table
+    participant DB as SQLite tasks and live tables
     participant Worker as worker_loop()
     participant Runner as run_codex_subprocess()
+    participant Sink as PersistentRunnerEventSink
     participant Codex as Codex CLI
 
     User->>CLI: python3 codex_queue.py add --title --prompt --workdir --priority
@@ -48,8 +53,17 @@ sequenceDiagram
     Worker->>Runner: run_codex_subprocess(task)
     Runner->>Runner: build_codex_command(task)
     Runner->>DB: update_task(id, status='RUNNING', attempts=attempts+1)
-    Runner->>Codex: subprocess.run(cmd, cwd=workdir)
-    Codex-->>Runner: stdout, stderr, returncode
+    Runner->>Sink: lifecycle STARTED(run_id, sequence)
+    Sink->>DB: start_run(task_id, run_id)
+    Runner->>Codex: run_subprocess_command(cmd, cwd, sink)
+    loop while stdout or stderr is readable
+        Codex-->>Runner: output bytes
+        Runner->>Sink: output(run_id, sequence, text)
+        Sink->>DB: append_run_output(...)
+    end
+    Codex-->>Runner: returncode
+    Runner->>Sink: lifecycle COMPLETED(run_id, sequence)
+    Sink->>DB: finish_run(...)
     Runner->>Runner: extract_session_id(output)
     Runner->>Runner: extract_reset_at(output)
     Runner->>DB: update_task(id, status='COMPLETED', output, session_id)
@@ -62,8 +76,8 @@ sequenceDiagram
 `codex_queue.py CLI` parses command-line arguments and translates user commands
 into function calls such as `add_task()` and `worker_loop()`.
 
-`SQLite tasks table` stores the queue. It is the only persistent state in this
-flow.
+`SQLite tasks and live tables` store the queue, per-attempt lifecycle, and
+bounded output chunks.
 
 `worker_loop()` polls the queue, selects the next runnable task, and hands it to
 the runner.
@@ -95,10 +109,16 @@ prompt or resume an existing Codex session.
 `Runner -> DB: update_task(... RUNNING ...)` marks the task as in progress and
 increments the attempt count before starting Codex.
 
-`Runner -> Codex: subprocess.run(...)` starts Codex and blocks until it exits.
+`Runner -> Sink: lifecycle STARTED(...)` creates the durable run before output
+can be appended.
 
-`Codex -> Runner: stdout, stderr, returncode` returns all process output and
-the exit code.
+`Runner -> Codex: run_subprocess_command(...)` starts Codex with independently
+readable stdout and stderr pipes.
+
+The output loop decodes partial UTF-8 safely and persists each normalized chunk
+before process exit. Event sequences remain monotonic across both streams.
+
+`Runner -> Sink: lifecycle COMPLETED(...)` idempotently finalizes the live run.
 
 `Runner -> Runner: extract_session_id(output)` tries to find a Codex session id
 for future resume.
@@ -137,11 +157,11 @@ sequenceDiagram
     participant Worker as worker_loop()
     participant Runner as run_codex_subprocess()
     participant Codex as Codex CLI
-    participant DB as SQLite tasks table
+    participant DB as SQLite tasks and live tables
 
     Worker->>Runner: run_codex_subprocess(task)
-    Runner->>Codex: subprocess.run(cmd, cwd=task.workdir)
-    Codex-->>Runner: stderr includes usage-limit text, returncode != 0
+    Runner->>Codex: run_subprocess_command(cmd, cwd=task.workdir)
+    Codex-->>Runner: streamed stderr includes usage-limit text, returncode != 0
     Runner->>Runner: looks_like_usage_limit(output)
     Runner->>Runner: extract_reset_at(output)
     alt reset_at found
@@ -168,7 +188,8 @@ of treating the failure as permanent.
 
 `Worker -> Runner: run_codex_subprocess(task)` starts a normal execution attempt.
 
-`Runner -> Codex: subprocess.run(...)` executes Codex in the task workdir.
+`Runner -> Codex: run_subprocess_command(...)` executes Codex in the task
+workdir and persists output chunks while the process is active.
 
 `Codex -> Runner: stderr includes usage-limit text` is triggered when Codex
 exits non-zero and prints limit-related text.
@@ -270,6 +291,7 @@ sequenceDiagram
     participant Codex as Codex CLI in PTY
     participant Detector as detect_approval_request()
     participant Policy as classify_command()
+    participant Sink as PersistentRunnerEventSink
     participant Gateway as TelegramApprovalGateway
     participant Broker as TelegramApprovalBroker
     participant Dispatcher as TelegramUpdateDispatcher
@@ -278,8 +300,11 @@ sequenceDiagram
     participant DB as SQLite tasks table
 
     Worker->>Pty: run_pty_command(cmd, cwd, task, config)
+    Pty->>Sink: lifecycle STARTED(run_id, sequence)
     Pty->>Codex: spawn process in pseudo-terminal
     Codex-->>Pty: terminal output chunk
+    Pty->>Sink: output(run_id, sequence, terminal, text)
+    Sink->>DB: append normalized bounded chunk
     Pty->>Pty: append chunk to rolling_buffer
     Pty->>Detector: detect_approval_request(rolling_buffer)
     Detector-->>Pty: ApprovalRequest(command, reason, context)
@@ -296,6 +321,8 @@ sequenceDiagram
     Pty->>Codex: write 'y' plus newline to PTY stdin
     Codex-->>Pty: continues execution
     Codex-->>Pty: final output and exit status
+    Pty->>Sink: lifecycle COMPLETED(run_id, sequence)
+    Sink->>DB: finish live run
     Pty-->>Worker: PtyRunResult(returncode, output, approval_events)
     Worker->>DB: update_task(status='COMPLETED', output)
 ```
@@ -305,7 +332,8 @@ sequenceDiagram
 `worker_loop()` selects and dispatches the task.
 
 `run_pty_command()` owns the interactive PTY lifecycle. It starts Codex, reads
-terminal chunks, calls the detector, applies policy, and writes terminal input.
+terminal chunks, emits typed events, calls the detector, applies policy, and
+writes terminal input.
 
 `Codex CLI in PTY` behaves as if a human is using a normal terminal.
 
@@ -330,6 +358,10 @@ auto-denied, or sent to Telegram.
 with terminal-like stdin/stdout/stderr.
 
 `Codex -> Pty: terminal output chunk` happens whenever Codex writes output.
+
+`Pty -> Sink -> DB` persists normalized terminal display output before Codex
+exits. Interaction requests and resolutions are emitted in the same sequence
+but their durable audit projection is deferred to issue `#13`.
 
 `Pty -> Pty: append chunk to rolling_buffer` keeps recent terminal text for
 prompt detection.
