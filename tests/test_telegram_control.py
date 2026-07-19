@@ -823,6 +823,90 @@ class TelegramControlTests(unittest.TestCase):
 
         self.assertIn("Prompt: leggi il readme", confirm_response)
 
+    def test_auto_voice_prompt_accepts_italian_detection(self):
+        """Automatic wizard prompts should accept detected Italian without a hint."""
+
+        bridge = FakeBridge(chat_id=123)
+        transcriber = MappingVoiceTranscriber({None: ("leggi il readme", "it")})
+        bot = TelegramControlBot(
+            bridge=bridge,
+            config=TelegramControlConfig(
+                allowed_workdirs=[self.tmp.name],
+                voice_enabled=True,
+                voice_language=None,
+                voice_allowed_languages=("it", "en"),
+            ),
+            voice_transcriber=transcriber,
+        )
+
+        transcript = bot.transcribe_prompt_voice({"file_id": "voice-prompt-it"})
+
+        self.assertEqual(transcript, "leggi il readme")
+        self.assertEqual(transcriber.calls, [None])
+
+    def test_auto_voice_prompt_accepts_english_detection(self):
+        """Automatic wizard prompts should accept detected English without an Italian hint."""
+
+        bridge = FakeBridge(chat_id=123)
+        transcriber = MappingVoiceTranscriber({None: ("read the readme", "en")})
+        bot = TelegramControlBot(
+            bridge=bridge,
+            config=TelegramControlConfig(
+                allowed_workdirs=[self.tmp.name],
+                voice_enabled=True,
+                voice_language=None,
+                voice_allowed_languages=("it", "en"),
+            ),
+            voice_transcriber=transcriber,
+        )
+
+        transcript = bot.transcribe_prompt_voice({"file_id": "voice-prompt-en"})
+
+        self.assertEqual(transcript, "read the readme")
+        self.assertEqual(transcriber.calls, [None])
+
+    def test_auto_voice_prompt_rejects_disallowed_detection(self):
+        """Automatic wizard prompts should reject languages outside the allow list."""
+
+        bridge = FakeBridge(chat_id=123)
+        transcriber = MappingVoiceTranscriber({None: ("bonjour", "fr")})
+        bot = TelegramControlBot(
+            bridge=bridge,
+            config=TelegramControlConfig(
+                allowed_workdirs=[self.tmp.name],
+                voice_enabled=True,
+                voice_language=None,
+                voice_allowed_languages=("it", "en"),
+            ),
+            voice_transcriber=transcriber,
+        )
+
+        with self.assertRaisesRegex(TelegramControlError, "language fr is not allowed"):
+            bot.transcribe_prompt_voice({"file_id": "voice-prompt-fr"})
+
+        self.assertFalse(Path(bridge.downloaded_files[-1]).exists())
+
+    def test_explicit_voice_prompt_language_remains_a_hint(self):
+        """An explicitly configured prompt language should be passed to Whisper."""
+
+        bridge = FakeBridge(chat_id=123)
+        transcriber = MappingVoiceTranscriber({"en": ("read the readme", "en")})
+        bot = TelegramControlBot(
+            bridge=bridge,
+            config=TelegramControlConfig(
+                allowed_workdirs=[self.tmp.name],
+                voice_enabled=True,
+                voice_language="en",
+                voice_allowed_languages=("it", "en"),
+            ),
+            voice_transcriber=transcriber,
+        )
+
+        transcript = bot.transcribe_prompt_voice({"file_id": "voice-prompt-explicit"})
+
+        self.assertEqual(transcript, "read the readme")
+        self.assertEqual(transcriber.calls, ["en"])
+
     def test_config_view_toggles_voice_debug(self):
         """Config view should expose checkbox-style toggles."""
 

@@ -283,6 +283,10 @@ in order. With `DUREX_VOICE_ALLOWED_LANGUAGES=it,en`, it tries Italian first,
 then English, and accepts the first transcript that parses as a supported Durex
 command.
 
+For the wizard's free-form task prompt, `auto` performs one unrestricted local
+language-detection pass and accepts only a detected language from the same
+allow-list. An explicit `DUREX_VOICE_LANGUAGE` remains a fixed prompt hint.
+
 Use workdir aliases instead of dictating filesystem paths:
 
 ```bash

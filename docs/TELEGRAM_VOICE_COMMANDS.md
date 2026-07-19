@@ -76,6 +76,11 @@ first, then an English hint, and accepts the first transcript that parses as a
 supported Durex command. Free Whisper language detection is used only as a final
 diagnostic fallback.
 
+The add-task wizard treats its free-form voice prompt differently: in `auto`
+mode it uses Whisper language detection once and accepts the transcript only
+when the detected language is in `DUREX_VOICE_ALLOWED_LANGUAGES`. Setting an
+explicit `DUREX_VOICE_LANGUAGE` keeps that language as the prompt hint.
+
 Start remote control:
 
 ```bash

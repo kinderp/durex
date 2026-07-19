@@ -1911,11 +1911,20 @@ class TelegramControlBot:
         if self.voice_transcriber is None:
             raise TelegramControlError("Voice transcription is not configured.")
         audio_path = self.download_voice_message(voice)
-        language = self.config.voice_language or (self.config.voice_allowed_languages[0] if self.config.voice_allowed_languages else None)
+        language = self.config.voice_language
         try:
             result = self.voice_transcriber.transcribe(audio_path, language=language)
         finally:
             Path(audio_path).unlink(missing_ok=True)
+        if language is None:
+            detected_language = (result.language or "").lower()
+            allowed_languages = {item.lower() for item in self.config.voice_allowed_languages}
+            if detected_language not in allowed_languages:
+                allowed = ", ".join(self.config.voice_allowed_languages)
+                detected = result.language or "unknown"
+                raise TelegramControlError(
+                    f"Voice prompt language {detected} is not allowed. Allowed: {allowed}."
+                )
         transcript = result.text.strip()
         if not transcript:
             raise TelegramControlError("Voice transcription returned empty text.")
