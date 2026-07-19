@@ -46,10 +46,13 @@ flowchart TD
     Detector --> Policy[approval_policy.py]
     Policy -->|auto allow| PtyRunner
     Policy -->|auto deny| PtyRunner
-    Policy -->|ask user| Telegram[telegram_bridge.py]
-    Telegram -->|inline keyboard decision| User
-    User -->|approve or deny| Telegram
-    Telegram --> PtyRunner
+    Policy -->|ask user| Gateway[TelegramApprovalGateway]
+    Gateway -->|send approval| Telegram[telegram_bridge.py]
+    Telegram -->|inline keyboard| User
+    User -->|approve or deny| Dispatcher[TelegramUpdateDispatcher]
+    Dispatcher --> Broker[TelegramApprovalBroker]
+    Broker --> Gateway
+    Gateway --> PtyRunner
     PtyRunner -->|write response into PTY stdin| CodexInteractive
     CodexExec -->|stdout stderr return code| Worker
     CodexInteractive -->|terminal output return code| Worker
@@ -99,6 +102,10 @@ or ask-Telegram.
 messages, performs update requests for the shared dispatcher, validates bot
 setup, and provides chat-id discovery. `telegram_dispatcher.py` validates and
 normalizes approval callbacks.
+
+`TelegramApprovalGateway` registers approval requests and waits on local broker
+events. `TelegramUpdateDispatcher` is the sole runtime polling owner, and
+`TelegramApprovalBroker` joins its validated callbacks to the waiting gateway.
 
 `User phone` is where the Telegram inline keyboard is shown. The phone never
 executes commands directly; it only sends an approval decision back to the local
@@ -150,17 +157,20 @@ command matches an auto-allow policy rule. The PTY runner writes `y\n`.
 `approval_policy.py -> PTY runner` with `auto deny` is triggered when the
 command matches an auto-deny policy rule. The PTY runner writes `n\n`.
 
-`approval_policy.py -> telegram_bridge.py` with `ask user` is triggered when the
-policy does not allow a local automatic decision.
+`approval_policy.py -> TelegramApprovalGateway` with `ask user` is triggered
+when the policy does not allow a local automatic decision. The gateway
+registers the request before asking the bridge to send it.
 
-`telegram_bridge.py -> User phone` is triggered by `send_approval_request()`.
-The bridge sends a Telegram message with inline buttons.
+`TelegramApprovalGateway -> telegram_bridge.py -> User phone` is triggered by
+`send_approval_request()`. The bridge sends a Telegram message with inline
+buttons.
 
-`User phone -> telegram_bridge.py` happens when the user taps approve, deny,
-show context, or stop task.
+`User phone -> TelegramUpdateDispatcher` happens when the user taps approve,
+deny, show context, or stop task and the shared poll returns that callback.
 
-`telegram_bridge.py -> PTY runner` returns the normalized decision after polling
-Telegram updates and matching the callback to the pending request id.
+`TelegramUpdateDispatcher -> TelegramApprovalBroker -> TelegramApprovalGateway
+-> PTY runner` validates the callback, resolves the matching pending request,
+and returns the normalized decision without polling from the runner thread.
 
 `PTY runner -> Codex CLI in pseudo-terminal` writes the final terminal input.
 For approval this is usually `y\n`; for denial it is usually `n\n`.
