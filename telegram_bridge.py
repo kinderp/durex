@@ -49,6 +49,7 @@ from urllib import parse, request, error
 
 DEFAULT_TELEGRAM_FILE_MAX_BYTES = 10 * 1024 * 1024
 TELEGRAM_FILE_CHUNK_BYTES = 64 * 1024
+DEFAULT_TELEGRAM_API_TIMEOUT_SECONDS = 30
 
 
 class TelegramDecisionAction(str, Enum):
@@ -339,7 +340,7 @@ class TelegramApprovalBridge:
         self,
         method: str,
         payload: dict[str, Any],
-        request_timeout: float = 30,
+        request_timeout: float = DEFAULT_TELEGRAM_API_TIMEOUT_SECONDS,
     ) -> dict[str, Any]:
         """
         Call one Telegram Bot API method using JSON POST.

@@ -12,6 +12,7 @@ from typing import Callable, Optional, Protocol
 
 from runtime_contracts import TelegramTransport, TelegramTransportConfig
 from telegram_bridge import (
+    DEFAULT_TELEGRAM_API_TIMEOUT_SECONDS,
     TelegramApprovalDecision,
     TelegramApprovalRequest,
     TelegramBridgeError,
@@ -488,10 +489,15 @@ class StandaloneTelegramApprovalRuntime:
         return self.gateway
 
     def close(self) -> None:
-        """Stop polling and wait briefly for the dispatcher thread."""
+        """Stop polling and wait for bounded in-flight transport calls."""
 
         self.dispatcher.stop()
         if self._thread is not None:
-            self._thread.join(timeout=max(2, self.dispatcher.poll_timeout_seconds + 6))
+            shutdown_timeout = max(
+                2,
+                self.dispatcher.poll_timeout_seconds + 6,
+                DEFAULT_TELEGRAM_API_TIMEOUT_SECONDS + 1,
+            )
+            self._thread.join(timeout=shutdown_timeout)
             if self._thread.is_alive():
                 raise TelegramBridgeError("Telegram update dispatcher did not stop.")

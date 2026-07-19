@@ -3,8 +3,10 @@
 import threading
 import time
 import unittest
+from unittest import mock
 
 from telegram_bridge import (
+    DEFAULT_TELEGRAM_API_TIMEOUT_SECONDS,
     TelegramApprovalDecision,
     TelegramApprovalRequest,
     TelegramBridgeConfig,
@@ -381,6 +383,18 @@ class TelegramApprovalGatewayTests(unittest.TestCase):
 
 class StandaloneTelegramApprovalRuntimeTests(unittest.TestCase):
     """Verify process-level standalone polling ownership."""
+
+    def test_close_wait_covers_normal_bot_api_request_timeout(self):
+        runtime = StandaloneTelegramApprovalRuntime(FakeApprovalTransport())
+        thread = mock.Mock()
+        thread.is_alive.return_value = False
+        runtime._thread = thread
+
+        runtime.close()
+
+        thread.join.assert_called_once_with(
+            timeout=DEFAULT_TELEGRAM_API_TIMEOUT_SECONDS + 1
+        )
 
     def test_standalone_dispatcher_requests_only_callback_updates(self):
         transport = FakeApprovalTransport([[]])
