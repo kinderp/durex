@@ -179,50 +179,12 @@ The `<type>` prefix is recommended but not mandatory when the branch already
 uses the historical commit style. English text, detailed body, and the final
 file list remain mandatory.
 
-Use a short subject plus a detailed body with these sections:
-
-```text
-Summary:
-...
-
-What changed:
-- ...
-
-Added files:
-- ...
-
-Modified files:
-- ...
-
-Validation:
-- ...
-```
-
-Only include `Added files` when files were added.
-
-Example:
-
-```text
-docs: add CLI documentation drift check
-
-Summary:
-Add a lightweight check that compares the argparse CLI surface with the user
-guide so new flags do not silently go undocumented.
-
-What changed:
-- Added scripts/check_cli_docs.py.
-- Documented the check and future generated-reference roadmap.
-
-Added files:
-- scripts/check_cli_docs.py
-- docs/CLI_DOC_AUTOMATION.md
-Modified files:
-- README.md
-- docs/USER_GUIDE.md
-Validation:
-- Ran python3 scripts/check_cli_docs.py.
-- Ran git diff --check.
-```
+Use the canonical commit format in
+[GITHUB_TEMPLATES.md](GITHUB_TEMPLATES.md#commit). It defines the required
+problem, solution, contract, validation, and modified-file sections. Include
+`Function notes` when a meaningful call path changes; omit that section for
+editorial or mechanically trivial changes. Do not introduce a second commit
+body template in another document.
 
 Before committing:
 
