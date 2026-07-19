@@ -1073,10 +1073,15 @@ class TelegramControlBot:
             workdir_choices = {Path(path).name or path: path for path in allowed_workdirs}
 
         configured_voice_enabled = voice_config.get("enabled")
-        if voice_enabled is None and configured_voice_enabled is not None:
+        voice_enabled_env = os.environ.get("DUREX_VOICE_ENABLED")
+        if voice_enabled is not None:
+            voice_is_enabled = voice_enabled
+        elif voice_enabled_env is not None:
+            voice_is_enabled = parse_bool_env(voice_enabled_env)
+        elif configured_voice_enabled is not None:
             voice_is_enabled = bool(configured_voice_enabled)
         else:
-            voice_is_enabled = parse_bool_env(os.environ.get("DUREX_VOICE_ENABLED")) if voice_enabled is None else voice_enabled
+            voice_is_enabled = False
         voice_provider = os.environ.get("DUREX_VOICE_PROVIDER", str(voice_config.get("provider", "faster_whisper")))
         voice_model = os.environ.get("DUREX_VOICE_MODEL", str(voice_config.get("model", "base")))
         voice_language_env = os.environ.get("DUREX_VOICE_LANGUAGE", str(voice_config.get("language", "auto"))).strip()
@@ -1087,7 +1092,12 @@ class TelegramControlBot:
         env_workdir_aliases = parse_workdir_aliases(os.environ.get("DUREX_VOICE_WORKDIR_ALIASES"))
         voice_workdir_aliases = merge_workdir_choices(workdir_choices, config_workdir_aliases, env_workdir_aliases)
         voice_aliases_file = os.environ.get("DUREX_VOICE_ALIASES_FILE", str(voice_config.get("aliases_file", DEFAULT_VOICE_ALIASES_FILE)))
-        voice_debug = parse_bool_env(os.environ.get("DUREX_VOICE_DEBUG")) or bool(voice_config.get("debug", False))
+        voice_debug_env = os.environ.get("DUREX_VOICE_DEBUG")
+        voice_debug = (
+            parse_bool_env(voice_debug_env)
+            if voice_debug_env is not None
+            else bool(voice_config.get("debug", False))
+        )
         voice_command_aliases = load_voice_command_aliases(voice_aliases_file)
 
         bridge = TelegramApprovalBridge(

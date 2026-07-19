@@ -597,6 +597,38 @@ class TelegramControlTests(unittest.TestCase):
         self.assertEqual(bot.config.allowed_workdirs, [str(Path(self.tmp.name).resolve())])
         self.assertEqual(bot.config.workdir_choices, {"temp": str(Path(self.tmp.name).resolve())})
 
+    def test_from_env_voice_environment_values_override_yaml_booleans(self):
+        """Explicit environment booleans should override YAML in both directions."""
+
+        config_path = Path(self.tmp.name) / "config.yaml"
+        config_path.write_text(
+            "\n".join(
+                [
+                    "telegram_control:",
+                    "  voice:",
+                    "    enabled: false",
+                    "    debug: true",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "DUREX_TELEGRAM_BOT_TOKEN": "token",
+                "DUREX_TELEGRAM_CHAT_ID": "123",
+                "DUREX_CONFIG": str(config_path),
+                "DUREX_VOICE_ENABLED": "1",
+                "DUREX_VOICE_DEBUG": "0",
+            },
+            clear=True,
+        ):
+            bot = TelegramControlBot.from_env()
+
+        self.assertTrue(bot.config.voice_enabled)
+        self.assertFalse(bot.config.voice_debug)
+
     def test_failed_voice_command_can_be_learned_with_inline_button(self):
         """Voice failures should offer inline buttons that save the selected alias."""
 
