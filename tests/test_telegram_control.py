@@ -49,7 +49,7 @@ class FakeBridge:
 
         return {"file_path": f"voice/{file_id}.ogg"}
 
-    def download_file(self, file_path, destination):
+    def download_file(self, file_path, destination, max_bytes=None):
         """Write a small fake voice file and return its path."""
 
         Path(destination).parent.mkdir(parents=True, exist_ok=True)
@@ -81,7 +81,7 @@ class FlakyBridge(FakeBridge):
 class FailingDownloadBridge(FakeBridge):
     """Bridge double that fails after receiving a temporary destination."""
 
-    def download_file(self, file_path, destination):
+    def download_file(self, file_path, destination, max_bytes=None):
         """Record the destination and simulate a Telegram download failure."""
 
         self.downloaded_files.append(destination)
@@ -343,6 +343,58 @@ class TelegramControlTests(unittest.TestCase):
 
         self.assertEqual(response, "Command rejected: download failed")
         self.assertEqual(bridge.messages[-1], response)
+
+    def test_voice_metadata_rejects_oversized_duration_before_download(self):
+        """Voice duration limits should reject work before downloading audio."""
+
+        bridge = FakeBridge(chat_id=123)
+        bot = TelegramControlBot(
+            bridge=bridge,
+            config=TelegramControlConfig(
+                allowed_workdirs=[self.tmp.name],
+                voice_enabled=True,
+                voice_max_duration_seconds=10,
+            ),
+            voice_transcriber=StaticVoiceTranscriber("stato", language="it"),
+        )
+
+        response = bot.handle_update(
+            {
+                "message": {
+                    "chat": {"id": 123},
+                    "voice": {"file_id": "voice-long", "duration": 11},
+                }
+            }
+        )
+
+        self.assertIn("configured 10-second limit", response)
+        self.assertEqual(bridge.downloaded_files, [])
+
+    def test_voice_metadata_rejects_oversized_file_before_download(self):
+        """Voice byte limits should reject declared oversized attachments."""
+
+        bridge = FakeBridge(chat_id=123)
+        bot = TelegramControlBot(
+            bridge=bridge,
+            config=TelegramControlConfig(
+                allowed_workdirs=[self.tmp.name],
+                voice_enabled=True,
+                voice_max_file_bytes=5,
+            ),
+            voice_transcriber=StaticVoiceTranscriber("stato", language="it"),
+        )
+
+        response = bot.handle_update(
+            {
+                "message": {
+                    "chat": {"id": 123},
+                    "voice": {"file_id": "voice-large", "file_size": 6},
+                }
+            }
+        )
+
+        self.assertIn("configured 5-byte limit", response)
+        self.assertEqual(bridge.downloaded_files, [])
 
     def test_voice_status_command(self):
         """A transcribed Italian status voice command should route to status."""
@@ -677,6 +729,8 @@ class TelegramControlTests(unittest.TestCase):
                     "  voice:",
                     "    enabled: false",
                     "    debug: true",
+                    "    max_file_bytes: 1024",
+                    "    max_duration_seconds: 30",
                 ]
             ),
             encoding="utf-8",
@@ -690,6 +744,8 @@ class TelegramControlTests(unittest.TestCase):
                 "DUREX_CONFIG": str(config_path),
                 "DUREX_VOICE_ENABLED": "1",
                 "DUREX_VOICE_DEBUG": "0",
+                "DUREX_VOICE_MAX_FILE_BYTES": "2048",
+                "DUREX_VOICE_MAX_DURATION_SECONDS": "60",
             },
             clear=True,
         ):
@@ -697,6 +753,8 @@ class TelegramControlTests(unittest.TestCase):
 
         self.assertTrue(bot.config.voice_enabled)
         self.assertFalse(bot.config.voice_debug)
+        self.assertEqual(bot.config.voice_max_file_bytes, 2048)
+        self.assertEqual(bot.config.voice_max_duration_seconds, 60)
 
     def test_failed_voice_command_can_be_learned_with_inline_button(self):
         """Voice failures should offer inline buttons that save the selected alias."""

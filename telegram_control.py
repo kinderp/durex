@@ -23,7 +23,12 @@ import time
 from typing import Callable, Optional
 
 import codex_queue
-from telegram_bridge import TelegramApprovalBridge, TelegramBridgeConfig, TelegramBridgeError
+from telegram_bridge import (
+    DEFAULT_TELEGRAM_FILE_MAX_BYTES,
+    TelegramApprovalBridge,
+    TelegramBridgeConfig,
+    TelegramBridgeError,
+)
 from voice_commands import ALIASABLE_ACTIONS, VoiceCommand, VoiceCommandError, normalize_transcript, parse_voice_command
 from voice_transcriber import VoiceTranscriber, VoiceTranscriptionError, build_voice_transcriber
 
@@ -48,6 +53,8 @@ LEARN_ACTION_ALIASES = {
     "stop": "stop",
     "ferma": "stop",
 }
+
+DEFAULT_VOICE_MAX_DURATION_SECONDS = 300
 
 
 @dataclass(frozen=True)
@@ -118,6 +125,8 @@ class TelegramControlConfig:
     voice_command_aliases: dict[str, str] = field(default_factory=dict)
     voice_aliases_file: str = DEFAULT_VOICE_ALIASES_FILE
     voice_debug: bool = False
+    voice_max_file_bytes: int = DEFAULT_TELEGRAM_FILE_MAX_BYTES
+    voice_max_duration_seconds: int = DEFAULT_VOICE_MAX_DURATION_SECONDS
     workdir_choices: dict[str, str] = field(default_factory=dict)
 
 
@@ -409,6 +418,20 @@ def parse_csv_env(value: Optional[str], default: tuple[str, ...]) -> tuple[str, 
         return default
     parsed = tuple(item.strip() for item in value.split(",") if item.strip())
     return parsed or default
+
+
+def parse_positive_int_setting(value: object, default: int, setting: str) -> int:
+    """Return a positive integer configuration value or raise a clear error."""
+
+    if value is None or value == "":
+        return default
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise TelegramControlError(f"{setting} must be a positive integer.") from exc
+    if parsed <= 0:
+        raise TelegramControlError(f"{setting} must be a positive integer.")
+    return parsed
 
 
 def parse_workdir_aliases(value: Optional[str]) -> dict[str, str]:
@@ -996,6 +1019,8 @@ class TelegramControlBot:
             voice_command_aliases=config.voice_command_aliases,
             voice_aliases_file=config.voice_aliases_file,
             voice_debug=config.voice_debug,
+            voice_max_file_bytes=config.voice_max_file_bytes,
+            voice_max_duration_seconds=config.voice_max_duration_seconds,
             workdir_choices={label: str(Path(path).expanduser().resolve()) for label, path in workdir_choices.items()},
         )
         self.voice_transcriber = voice_transcriber
@@ -1098,6 +1123,16 @@ class TelegramControlBot:
             if voice_debug_env is not None
             else bool(voice_config.get("debug", False))
         )
+        voice_max_file_bytes = parse_positive_int_setting(
+            os.environ.get("DUREX_VOICE_MAX_FILE_BYTES", voice_config.get("max_file_bytes")),
+            DEFAULT_TELEGRAM_FILE_MAX_BYTES,
+            "DUREX_VOICE_MAX_FILE_BYTES",
+        )
+        voice_max_duration_seconds = parse_positive_int_setting(
+            os.environ.get("DUREX_VOICE_MAX_DURATION_SECONDS", voice_config.get("max_duration_seconds")),
+            DEFAULT_VOICE_MAX_DURATION_SECONDS,
+            "DUREX_VOICE_MAX_DURATION_SECONDS",
+        )
         voice_command_aliases = load_voice_command_aliases(voice_aliases_file)
 
         bridge = TelegramApprovalBridge(
@@ -1124,6 +1159,8 @@ class TelegramControlBot:
                 voice_command_aliases=voice_command_aliases,
                 voice_aliases_file=voice_aliases_file,
                 voice_debug=voice_debug,
+                voice_max_file_bytes=voice_max_file_bytes,
+                voice_max_duration_seconds=voice_max_duration_seconds,
                 workdir_choices=workdir_choices,
             ),
             voice_transcriber=voice_transcriber,
@@ -1659,6 +1696,17 @@ class TelegramControlBot:
             Local audio path.
         """
 
+        duration = self.voice_metadata_int(voice.get("duration"), "duration")
+        if duration is not None and duration > self.config.voice_max_duration_seconds:
+            raise TelegramControlError(
+                f"Voice message exceeds the configured {self.config.voice_max_duration_seconds}-second limit."
+            )
+        declared_size = self.voice_metadata_int(voice.get("file_size"), "file_size")
+        if declared_size is not None and declared_size > self.config.voice_max_file_bytes:
+            raise TelegramControlError(
+                f"Voice message exceeds the configured {self.config.voice_max_file_bytes}-byte limit."
+            )
+
         file_id = voice.get("file_id")
         if not file_id:
             raise TelegramControlError("Voice message has no file_id.")
@@ -1666,16 +1714,39 @@ class TelegramControlBot:
         file_path = file_info.get("file_path")
         if not file_path:
             raise TelegramControlError("Telegram did not return a voice file path.")
+        remote_size = self.voice_metadata_int(file_info.get("file_size"), "file_size")
+        if remote_size is not None and remote_size > self.config.voice_max_file_bytes:
+            raise TelegramControlError(
+                f"Voice message exceeds the configured {self.config.voice_max_file_bytes}-byte limit."
+            )
 
         suffix = Path(str(file_path)).suffix or ".ogg"
         with tempfile.NamedTemporaryFile(prefix="durex_voice_", suffix=suffix, delete=False) as temp_file:
             destination = temp_file.name
 
         try:
-            return self.bridge.download_file(str(file_path), destination)
+            return self.bridge.download_file(
+                str(file_path),
+                destination,
+                max_bytes=self.config.voice_max_file_bytes,
+            )
         except BaseException:
             Path(destination).unlink(missing_ok=True)
             raise
+
+    @staticmethod
+    def voice_metadata_int(value: object, name: str) -> Optional[int]:
+        """Validate an optional non-negative Telegram voice metadata integer."""
+
+        if value is None:
+            return None
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError) as exc:
+            raise TelegramControlError(f"Telegram voice {name} is invalid.") from exc
+        if parsed < 0:
+            raise TelegramControlError(f"Telegram voice {name} is invalid.")
+        return parsed
 
     def transcribe_voice_command(self, audio_path: str) -> tuple[str, VoiceCommand, Optional[str], list[str]]:
         """

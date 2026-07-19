@@ -67,6 +67,10 @@ telegram_control:
       - en
     aliases_file: .durex_voice_aliases.json
     debug: false
+    # Resource limits. Environment overrides:
+    # DUREX_VOICE_MAX_FILE_BYTES and DUREX_VOICE_MAX_DURATION_SECONDS
+    max_file_bytes: 10485760
+    max_duration_seconds: 300
     workdir_aliases:
       durex: /lab/durex
 

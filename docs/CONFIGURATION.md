@@ -108,6 +108,8 @@ telegram_control:
     allowed_languages: [it, en]
     aliases_file: .durex_voice_aliases.json
     debug: false
+    max_file_bytes: 10485760
+    max_duration_seconds: 300
     workdir_aliases:
       durex: /lab/durex
 
