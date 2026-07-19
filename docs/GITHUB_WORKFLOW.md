@@ -293,3 +293,23 @@ unless the maintainer explicitly requests it.
 Use [GITHUB_TEMPLATES.md](GITHUB_TEMPLATES.md) for milestone, parent issue,
 child issue, commit, PR, review round, inline finding, finding-fix commit,
 finding reply, and parent-progress templates.
+
+## Codex skill
+
+The versioned workflow skill lives at
+`skills/durex-pr-commit-rules/SKILL.md`. `AGENTS.md` directs repository-aware
+agents to load it for commits, GitHub planning, PR work, and reviews.
+
+To expose the skill by name to new Codex sessions on a Linux development
+machine, link the versioned directory into the local skill directory:
+
+```bash
+mkdir -p "${CODEX_HOME:-$HOME/.codex}/skills"
+ln -s "$(pwd)/skills/durex-pr-commit-rules" \
+  "${CODEX_HOME:-$HOME/.codex}/skills/durex-pr-commit-rules"
+```
+
+Run the command from the Durex repository root. Do not overwrite an existing
+path without first checking whether it contains local changes. Start a new
+Codex session after adding the link, then invoke `$durex-pr-commit-rules` or use
+the textual mode triggers documented above.

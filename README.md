@@ -626,6 +626,11 @@ Then add one task per folder. This keeps Codex isolated and avoids mixing files 
 | [`docs/SPHINX_API_DOCUMENTATION.md`](docs/SPHINX_API_DOCUMENTATION.md) | Sphinx API documentation contract and generation roadmap |
 | [`docs/ROADMAP.md`](docs/ROADMAP.md) | Version roadmap |
 
+The repository also versions the
+[`durex-pr-commit-rules`](skills/durex-pr-commit-rules/SKILL.md) Codex skill for
+supervised and autonomous GitHub delivery workflows. Installation and invocation
+are documented in [GitHub Planning and PR Review Workflow](docs/GITHUB_WORKFLOW.md#codex-skill).
+
 ## Roadmap
 
 ```mermaid

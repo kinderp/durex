@@ -1,0 +1,4 @@
+interface:
+  display_name: "Durex PR Rules"
+  short_description: "Run traceable Durex PR and review workflows"
+  default_prompt: "Use $durex-pr-commit-rules to run this Durex change through its GitHub workflow."
