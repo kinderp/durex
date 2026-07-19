@@ -5,7 +5,7 @@ import tempfile
 from pathlib import Path
 import unittest
 
-from task_services import SQLiteTaskRepository, TaskApplicationService
+from task_services import SQLiteTaskRepository, TaskApplicationService, TaskRepositoryError
 
 
 class TaskApplicationServiceTests(unittest.TestCase):
@@ -30,6 +30,16 @@ class TaskApplicationServiceTests(unittest.TestCase):
             priority=priority,
             max_attempts=3,
         )
+
+    def limited_service(self, max_chars=10, max_chunks=2, runs_per_task=2):
+        repository = SQLiteTaskRepository(
+            connect=lambda: sqlite3.connect(self.db_path),
+            now=lambda: self.now,
+            live_output_max_chars=max_chars,
+            live_output_max_chunks=max_chunks,
+            live_output_runs_per_task=runs_per_task,
+        )
+        return TaskApplicationService(repository, now=lambda: self.now)
 
     def test_next_runnable_orders_by_priority_then_identifier(self):
         """Lower priority values win and insertion order breaks ties."""
@@ -126,6 +136,124 @@ class TaskApplicationServiceTests(unittest.TestCase):
         self.assertEqual(dict(task)["priority"], 7)
         with self.assertRaisesRegex(IndexError, "No item with that key"):
             task["missing"]
+
+    def test_live_output_is_ordered_deduplicated_and_cursor_addressable(self):
+        """Sequence cursors return new chunks once and reject late conflicts."""
+
+        service = self.limited_service()
+        task_id = service.add_task("live", "prompt")
+        self.assertTrue(service.start_task_run(task_id, "run-1", attempt=1))
+        self.assertFalse(service.start_task_run(task_id, "run-1", attempt=1))
+        self.assertTrue(service.append_live_output(task_id, "run-1", 2, "12345"))
+        self.assertTrue(service.append_live_output(task_id, "run-1", 4, "67890"))
+        self.assertFalse(service.append_live_output(task_id, "run-1", 4, "67890"))
+
+        first = service.live_output(task_id, run_id="run-1", limit=1)
+        older = service.live_output(
+            task_id,
+            run_id="run-1",
+            before_sequence=first.chunks[0].sequence,
+        )
+        refresh = service.live_output(
+            task_id,
+            run_id="run-1",
+            after_sequence=older.chunks[-1].sequence,
+        )
+
+        self.assertEqual([chunk.sequence for chunk in first.chunks], [4])
+        self.assertEqual([chunk.sequence for chunk in older.chunks], [2])
+        self.assertTrue(older.has_more)
+        self.assertEqual([chunk.sequence for chunk in refresh.chunks], [4])
+        with self.assertRaisesRegex(TaskRepositoryError, "not monotonic"):
+            service.append_live_output(task_id, "run-1", 3, "late")
+
+    def test_live_output_compaction_tracks_dropped_cursor_and_characters(self):
+        """Per-run storage retains a bounded suffix with explicit gap metadata."""
+
+        service = self.limited_service(max_chars=10, max_chunks=2)
+        task_id = service.add_task("bounded", "prompt")
+        service.start_task_run(task_id, "run-bounded", attempt=1)
+        service.append_live_output(task_id, "run-bounded", 2, "12345")
+        service.append_live_output(task_id, "run-bounded", 4, "67890")
+        service.append_live_output(task_id, "run-bounded", 6, "abc")
+
+        page = service.live_output(task_id, run_id="run-bounded")
+
+        self.assertEqual([(chunk.sequence, chunk.text) for chunk in page.chunks], [(4, "67890"), (6, "abc")])
+        self.assertEqual(page.dropped_through_sequence, 2)
+        self.assertEqual(page.dropped_chars, 5)
+        self.assertTrue(page.has_older)
+
+    def test_large_single_chunk_keeps_only_its_suffix(self):
+        """One oversized event cannot bypass the per-run character limit."""
+
+        service = self.limited_service(max_chars=5)
+        task_id = service.add_task("large", "prompt")
+        service.start_task_run(task_id, "run-large", attempt=1)
+        service.append_live_output(task_id, "run-large", 2, "0123456789")
+
+        page = service.live_output(task_id, run_id="run-large")
+
+        self.assertEqual(page.chunks[0].text, "56789")
+        self.assertEqual(page.dropped_chars, 5)
+        self.assertTrue(page.has_older)
+        self.assertFalse(service.append_live_output(task_id, "run-large", 2, "0123456789"))
+
+    def test_run_finalization_is_idempotent_but_rejects_conflicts(self):
+        """A terminal lifecycle replay cannot change the persisted outcome."""
+
+        service = self.limited_service()
+        task_id = service.add_task("finish", "prompt")
+        service.start_task_run(task_id, "run-finish", attempt=1)
+        service.append_live_output(task_id, "run-finish", 2, "done")
+
+        self.assertTrue(
+            service.finish_task_run(task_id, "run-finish", 3, "completed", 0)
+        )
+        self.assertFalse(
+            service.finish_task_run(task_id, "run-finish", 3, "completed", 0)
+        )
+        with self.assertRaisesRegex(TaskRepositoryError, "finalized differently"):
+            service.finish_task_run(task_id, "run-finish", 3, "failed", 1)
+
+    def test_finished_run_retention_survives_service_restart(self):
+        """Only configured historical runs remain queryable after reopening SQLite."""
+
+        service = self.limited_service(runs_per_task=2)
+        task_id = service.add_task("retention", "prompt")
+        for attempt in range(1, 4):
+            run_id = f"run-{attempt}"
+            service.start_task_run(task_id, run_id, attempt)
+            service.append_live_output(task_id, run_id, 2, run_id)
+            service.finish_task_run(task_id, run_id, 3, "completed", 0)
+
+        restarted = self.limited_service(runs_per_task=2)
+
+        self.assertIsNone(restarted.live_output(task_id, run_id="run-1"))
+        self.assertEqual(restarted.live_output(task_id, run_id="run-2").chunks[0].text, "run-2")
+        self.assertEqual(restarted.live_output(task_id).run_id, "run-3")
+
+    def test_initialize_adds_live_output_tables_without_replacing_tasks(self):
+        """The additive migration must preserve an existing task database."""
+
+        task_id = self.add_task("legacy")
+        with sqlite3.connect(self.db_path) as con:
+            con.execute("DROP TABLE task_output_chunks")
+            con.execute("DROP TABLE task_runs")
+
+        migrated = self.limited_service()
+        migrated.initialize()
+
+        self.assertEqual(migrated.task_detail(task_id).title, "legacy")
+        with sqlite3.connect(self.db_path) as con:
+            tables = {
+                row[0]
+                for row in con.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                )
+            }
+        self.assertIn("task_runs", tables)
+        self.assertIn("task_output_chunks", tables)
 
 
 if __name__ == "__main__":

@@ -3,9 +3,11 @@
 
 from __future__ import annotations
 
+import re
 from typing import Optional
 import uuid
 
+from approval_detector import redact_for_display
 from runtime_contracts import (
     RunnerEvent,
     RunnerEventSink,
@@ -15,6 +17,24 @@ from runtime_contracts import (
     RunnerLifecycleEvent,
     RunnerOutputEvent,
 )
+from task_services import TaskApplicationService
+
+
+ANSI_OSC_RE = re.compile(r"\x1b\][^\x07]*(?:\x07|\x1b\\)")
+ANSI_CSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+ANSI_SINGLE_RE = re.compile(r"\x1b[@-_]")
+DISPLAY_CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+
+def normalize_live_output(text: str) -> str:
+    """Normalize terminal controls and redact obvious secrets for display."""
+
+    normalized = ANSI_OSC_RE.sub("", text)
+    normalized = ANSI_CSI_RE.sub("", normalized)
+    normalized = ANSI_SINGLE_RE.sub("", normalized)
+    normalized = normalized.replace("\r\n", "\n").replace("\r", "\n")
+    normalized = DISPLAY_CONTROL_RE.sub("", normalized)
+    return redact_for_display(normalized) or ""
 
 
 class RunnerEventEmitter:
@@ -102,3 +122,46 @@ class RunnerEventEmitter:
                 source=source,
             )
         )
+
+
+class PersistentRunnerEventSink:
+    """Project runner lifecycle and normalized output into SQLite services."""
+
+    def __init__(
+        self,
+        tasks: TaskApplicationService,
+        task_id: int,
+        run_id: str,
+        attempt: int,
+    ) -> None:
+        self.tasks = tasks
+        self.task_id = task_id
+        self.run_id = run_id
+        self.attempt = attempt
+
+    def __call__(self, event: RunnerEvent) -> None:
+        if event.task_id != self.task_id or event.run_id != self.run_id:
+            raise ValueError("Runner event does not match the persistent sink identity")
+
+        if isinstance(event, RunnerLifecycleEvent):
+            if event.state == RunnerLifecycle.STARTED:
+                self.tasks.start_task_run(self.task_id, self.run_id, self.attempt)
+                return
+            self.tasks.finish_task_run(
+                self.task_id,
+                self.run_id,
+                event.sequence,
+                event.state.value,
+                event.returncode,
+            )
+            return
+
+        if isinstance(event, RunnerOutputEvent):
+            text = normalize_live_output(event.text)
+            if text:
+                self.tasks.append_live_output(
+                    self.task_id,
+                    self.run_id,
+                    event.sequence,
+                    text,
+                )
