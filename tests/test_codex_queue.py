@@ -3,6 +3,9 @@ Tests for queue output parsing helpers.
 """
 
 import os
+import sqlite3
+import tempfile
+from pathlib import Path
 import unittest
 from unittest import mock
 
@@ -33,6 +36,128 @@ resuming work with {new_session}
         session = "33333333-3333-3333-3333-333333333333"
 
         self.assertEqual(extract_session_id(f"session_id: {session}"), session)
+
+
+class QueueLifecycleCharacterizationTests(unittest.TestCase):
+    """Lock down finalization and runner-dispatch decisions before extraction."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.old_db_path = codex_queue.DB_PATH
+        codex_queue.DB_PATH = str(Path(self.tmp.name) / "tasks.db")
+        self.addCleanup(self.restore_db_path)
+
+    def restore_db_path(self):
+        codex_queue.DB_PATH = self.old_db_path
+
+    def add_task(self, max_attempts=3):
+        codex_queue.add_task(
+            title="characterized task",
+            prompt="perform work",
+            workdir=self.tmp.name,
+            priority=1,
+            max_attempts=max_attempts,
+        )
+        return codex_queue.get_next_task()
+
+    def load_task(self, task_id):
+        codex_queue.init_db()
+        with codex_queue.connect() as con:
+            con.row_factory = sqlite3.Row
+            return con.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+
+    def test_successful_output_completes_task_and_keeps_latest_session(self):
+        """Successful runs persist output and the final session candidate."""
+
+        task = self.add_task()
+        session = "44444444-4444-4444-4444-444444444444"
+
+        codex_queue.finish_task_from_output(task, f"Session: {session}\ndone", 0)
+
+        stored = self.load_task(task["id"])
+        self.assertEqual(stored["status"], "COMPLETED")
+        self.assertEqual(stored["session_id"], session)
+        self.assertEqual(stored["output"], f"Session: {session}\ndone")
+        self.assertIsNone(stored["last_error"])
+
+    def test_usage_limit_suspends_task_without_consuming_retry_policy(self):
+        """Quota output stores its reset timestamp and resumable next step."""
+
+        task = self.add_task()
+        reset_at = "2026-07-20T08:00:00+00:00"
+
+        codex_queue.finish_task_from_output(
+            task,
+            f"Usage limit reached. Reset at {reset_at}",
+            1,
+        )
+
+        stored = self.load_task(task["id"])
+        self.assertEqual(stored["status"], "WAITING_LIMIT")
+        self.assertEqual(stored["reset_at"], reset_at)
+        self.assertEqual(stored["last_error"], "Usage limit reached")
+        self.assertIn("exact point", stored["next_step"])
+
+    def test_non_limit_failure_retries_then_fails_at_attempt_limit(self):
+        """Failures return to pending until the configured maximum is reached."""
+
+        task = self.add_task(max_attempts=2)
+        codex_queue.update_task(task["id"], status="RUNNING", attempts=1)
+        codex_queue.finish_task_from_output(task, "first failure", 1)
+        stored = self.load_task(task["id"])
+        self.assertEqual(stored["status"], "PENDING")
+
+        codex_queue.update_task(task["id"], status="RUNNING", attempts=2)
+        second_attempt = self.load_task(task["id"])
+        codex_queue.finish_task_from_output(second_attempt, "second failure", 1)
+        stored = self.load_task(task["id"])
+        self.assertEqual(stored["status"], "FAILED")
+        self.assertEqual(stored["last_error"], "second failure")
+
+    def test_run_task_dispatches_only_the_selected_runner(self):
+        """Runner mode remains the sole dispatch decision at this boundary."""
+
+        task = self.add_task()
+        task_service = codex_queue.get_task_service()
+        with mock.patch.object(codex_queue, "run_codex_pty") as pty_run, mock.patch.object(
+            codex_queue, "run_codex_subprocess"
+        ) as subprocess_run:
+            codex_queue.run_task(
+                task,
+                runner_mode="pty",
+                telegram_enabled=True,
+                telegram_verbosity="verbose",
+                echo_output=False,
+                task_service=task_service,
+            )
+
+        pty_run.assert_called_once_with(
+            task,
+            telegram_enabled=True,
+            telegram_verbosity="verbose",
+            echo_output=False,
+            task_service=task_service,
+        )
+        subprocess_run.assert_not_called()
+
+    def test_subprocess_lifecycle_uses_injected_task_service(self):
+        """Runner writes must stay in the repository that supplied the task."""
+
+        task = self.add_task()
+        task_service = codex_queue.get_task_service()
+        completed = mock.Mock(returncode=0, stdout="done", stderr="")
+
+        with mock.patch.object(
+            codex_queue,
+            "get_task_service",
+            side_effect=AssertionError("global service lookup"),
+        ), mock.patch.object(codex_queue.subprocess, "run", return_value=completed):
+            codex_queue.run_codex_subprocess(task, task_service=task_service)
+
+        stored = self.load_task(task["id"])
+        self.assertEqual(stored["status"], "COMPLETED")
+        self.assertEqual(stored["output"], "done\n")
 
 
 class TelegramCheckTests(unittest.TestCase):

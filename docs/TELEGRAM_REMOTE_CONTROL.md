@@ -42,6 +42,7 @@ flowchart LR
     Telegram[Telegram Bot API]
     Bridge[telegram_bridge.py]
     Control[telegram_control.py]
+    Service[TaskApplicationService]
     Queue[(SQLite task queue)]
     Worker[Durex worker thread]
     Runner[Codex runner]
@@ -49,11 +50,12 @@ flowchart LR
     User -->|send text command| Telegram
     Control -->|long poll getUpdates| Bridge
     Bridge -->|message updates| Control
-    Control -->|authorized command| Queue
+    Control -->|authorized command| Service
+    Service -->|repository operation| Queue
     Control -->|/run starts background worker| Worker
-    Worker -->|claim next task| Queue
+    Worker -->|select next task| Service
     Worker -->|run task| Runner
-    Runner -->|task output and status| Queue
+    Runner -->|task output and status| Service
     Control -->|send response| Bridge
     Bridge -->|sendMessage| Telegram
     Telegram -->|reply text| User
@@ -72,8 +74,12 @@ polling and outbound messages.
 polls only `message` updates and sends plain text responses.
 
 `telegram_control.py` is the command router. It verifies the chat id, parses the
-message text, calls the correct queue or worker function, catches command errors,
-and formats a Telegram response.
+message text, calls the injected task service or worker operation, catches
+command errors, and formats a Telegram response.
+
+`TaskApplicationService` is the shared application boundary for status, task
+lists, task detail, add, output tail, and runnable selection. Task SQL remains in
+its SQLite repository implementation.
 
 `SQLite task queue` stores tasks, statuses, attempts, priorities, prompts,
 working directories, output, and errors.
@@ -96,20 +102,21 @@ triggered continuously by `run_forever()`.
 `telegram_bridge.py -> telegram_control.py` is triggered when Telegram returns
 message updates from the Bot API.
 
-`telegram_control.py -> SQLite task queue` is triggered by commands that read or
-modify queue state, including `/status`, `/tasks`, `/add`, and `/tail`.
+`telegram_control.py -> TaskApplicationService -> SQLite task queue` is triggered
+by commands that read or modify queue state, including `/status`, `/tasks`,
+`/add`, and `/tail`. The Telegram command router does not execute task SQL.
 
 `telegram_control.py -> Durex worker thread` is triggered by `/run` or `/stop`.
 `/run` starts a background thread if one is not already alive. `/stop` sets a
 flag that the worker checks before starting another task.
 
-`Durex worker thread -> SQLite task queue` is triggered before each task run when
-the worker asks for the next executable task.
+`Durex worker thread -> TaskApplicationService` is triggered before each task run
+when the worker asks for the next executable task.
 
 `Durex worker thread -> Codex runner` is triggered after a task has been claimed.
 
-`Codex runner -> SQLite task queue` is triggered as task status, output, and
-errors are recorded.
+`Codex runner -> TaskApplicationService` is triggered as task status, output,
+and errors are recorded.
 
 `telegram_control.py -> telegram_bridge.py -> Telegram Bot API -> Telegram user`
 is triggered after every accepted command and after worker notifications such as

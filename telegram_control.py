@@ -23,6 +23,8 @@ import time
 from typing import Callable, Optional
 
 import codex_queue
+from runtime_contracts import TelegramTransport
+from task_services import TaskApplicationService, TaskRecord
 from telegram_bridge import (
     DEFAULT_TELEGRAM_FILE_MAX_BYTES,
     TelegramApprovalBridge,
@@ -788,7 +790,7 @@ def unique_normalized_phrases(values: list[str]) -> list[str]:
     return phrases
 
 
-def task_counts() -> dict[str, int]:
+def task_counts(task_service: Optional[TaskApplicationService] = None) -> dict[str, int]:
     """
     Return task counts by status.
 
@@ -796,13 +798,14 @@ def task_counts() -> dict[str, int]:
         Mapping from queue status to number of tasks in that status.
     """
 
-    codex_queue.init_db()
-    with codex_queue.connect() as con:
-        rows = con.execute("SELECT status, COUNT(*) FROM tasks GROUP BY status").fetchall()
-    return {str(status): int(count) for status, count in rows}
+    return (task_service or codex_queue.get_task_service()).task_counts()
 
 
-def format_status(worker_running: bool, last_error: Optional[str]) -> str:
+def format_status(
+    worker_running: bool,
+    last_error: Optional[str],
+    task_service: Optional[TaskApplicationService] = None,
+) -> str:
     """
     Build a compact status message.
 
@@ -816,7 +819,7 @@ def format_status(worker_running: bool, last_error: Optional[str]) -> str:
         Telegram-friendly queue and worker status text.
     """
 
-    counts = task_counts()
+    counts = task_counts(task_service)
     parts = ["Durex status", f"Worker: {'running' if worker_running else 'idle'}"]
     for status in sorted(codex_queue.STATUSES):
         parts.append(f"{status}: {counts.get(status, 0)}")
@@ -825,7 +828,10 @@ def format_status(worker_running: bool, last_error: Optional[str]) -> str:
     return "\n".join(parts)
 
 
-def list_recent_tasks(limit: int = DEFAULT_TASK_LIMIT) -> str:
+def list_recent_tasks(
+    limit: int = DEFAULT_TASK_LIMIT,
+    task_service: Optional[TaskApplicationService] = None,
+) -> str:
     """
     Return a Telegram-friendly task list.
 
@@ -837,28 +843,23 @@ def list_recent_tasks(limit: int = DEFAULT_TASK_LIMIT) -> str:
         Plain-text list ordered by newest task first.
     """
 
-    codex_queue.init_db()
-    with codex_queue.connect() as con:
-        rows = con.execute(
-            """
-            SELECT id, title, status, priority, attempts
-            FROM tasks
-            ORDER BY id DESC
-            LIMIT ?
-            """,
-            (limit,),
-        ).fetchall()
+    rows = (task_service or codex_queue.get_task_service()).recent_tasks(limit)
 
     if not rows:
         return "No tasks found."
 
     lines = ["Recent tasks"]
-    for task_id, title, status, priority, attempts in rows:
-        lines.append(f"#{task_id} {status} p={priority} attempts={attempts} - {title}")
+    for row in rows:
+        lines.append(
+            f"#{row.id} {row.status} p={row.priority} attempts={row.attempts} - {row.title}"
+        )
     return "\n".join(lines)
 
 
-def recent_task_rows(limit: int = DEFAULT_TASK_LIMIT) -> list[sqlite3.Row]:
+def recent_task_rows(
+    limit: int = DEFAULT_TASK_LIMIT,
+    task_service: Optional[TaskApplicationService] = None,
+) -> list[TaskRecord]:
     """
     Return recent task rows for interactive Telegram views.
 
@@ -867,24 +868,13 @@ def recent_task_rows(limit: int = DEFAULT_TASK_LIMIT) -> list[sqlite3.Row]:
             Maximum number of rows.
 
     Returns:
-        SQLite rows ordered newest first.
+        Task records ordered newest first.
     """
 
-    codex_queue.init_db()
-    with codex_queue.connect() as con:
-        con.row_factory = sqlite3.Row
-        return con.execute(
-            """
-            SELECT id, title, status, priority, attempts, max_attempts, workdir, last_error
-            FROM tasks
-            ORDER BY id DESC
-            LIMIT ?
-            """,
-            (limit,),
-        ).fetchall()
+    return (task_service or codex_queue.get_task_service()).recent_tasks(limit)
 
 
-def format_recent_tasks_view(rows: list[sqlite3.Row]) -> str:
+def format_recent_tasks_view(rows: list[TaskRecord]) -> str:
     """
     Format recent task rows for Telegram.
 
@@ -904,7 +894,7 @@ def format_recent_tasks_view(rows: list[sqlite3.Row]) -> str:
     return "\n".join(lines)
 
 
-def build_tasks_keyboard(rows: list[sqlite3.Row]) -> dict:
+def build_tasks_keyboard(rows: list[TaskRecord]) -> dict:
     """
     Build task-list inline keyboard.
 
@@ -927,7 +917,10 @@ def build_tasks_keyboard(rows: list[sqlite3.Row]) -> dict:
     return {"inline_keyboard": task_buttons}
 
 
-def task_detail(task_id: int) -> tuple[str, dict]:
+def task_detail(
+    task_id: int,
+    task_service: Optional[TaskApplicationService] = None,
+) -> tuple[str, dict]:
     """
     Return task detail text and keyboard.
 
@@ -939,18 +932,7 @@ def task_detail(task_id: int) -> tuple[str, dict]:
         Tuple of text and reply markup.
     """
 
-    codex_queue.init_db()
-    with codex_queue.connect() as con:
-        con.row_factory = sqlite3.Row
-        row = con.execute(
-            """
-            SELECT id, title, status, priority, attempts, max_attempts, workdir,
-                   reset_at, session_id, last_error
-            FROM tasks
-            WHERE id = ?
-            """,
-            (task_id,),
-        ).fetchone()
+    row = (task_service or codex_queue.get_task_service()).task_detail(task_id)
     if row is None:
         raise TelegramControlError("Task not found.")
 
@@ -984,7 +966,11 @@ def task_detail(task_id: int) -> tuple[str, dict]:
     return "\n".join(lines), keyboard
 
 
-def tail_task_output(task_id: Optional[int] = None, chars: int = 2500) -> str:
+def tail_task_output(
+    task_id: Optional[int] = None,
+    chars: int = 2500,
+    task_service: Optional[TaskApplicationService] = None,
+) -> str:
     """
     Return the tail of one task output, defaulting to the latest task.
 
@@ -998,31 +984,22 @@ def tail_task_output(task_id: Optional[int] = None, chars: int = 2500) -> str:
         Task output/error tail or a human-readable not-found/no-output message.
     """
 
-    codex_queue.init_db()
-    with codex_queue.connect() as con:
-        if task_id is None:
-            row = con.execute(
-                "SELECT id, title, output, last_error FROM tasks ORDER BY id DESC LIMIT 1"
-            ).fetchone()
-        else:
-            row = con.execute(
-                "SELECT id, title, output, last_error FROM tasks WHERE id = ?",
-                (task_id,),
-            ).fetchone()
+    row = (task_service or codex_queue.get_task_service()).task_output(task_id)
 
     if row is None:
         return "Task not found."
 
-    output = row[2] or row[3] or ""
+    output = row.output or row.last_error or ""
     if not output:
-        return f"Task #{row[0]} has no output yet."
-    return truncate_message(f"Task #{row[0]} - {row[1]}\n\n{output[-chars:]}")
+        return f"Task #{row.id} has no output yet."
+    return truncate_message(f"Task #{row.id} - {row.title}\n\n{output[-chars:]}")
 
 
 def run_worker_until_empty(
     state: WorkerState,
     config: TelegramControlConfig,
     notify: Callable[[str], None],
+    task_service: Optional[TaskApplicationService] = None,
 ) -> None:
     """
     Run ready queue tasks in a background thread until no task is runnable.
@@ -1034,6 +1011,8 @@ def run_worker_until_empty(
             Runtime control configuration.
         notify:
             Callback used to send status messages back to Telegram.
+        task_service:
+            Persistence boundary shared by task selection and execution.
 
     Returns:
         None. Worker completion or errors are reported through ``notify`` and
@@ -1041,7 +1020,8 @@ def run_worker_until_empty(
     """
 
     try:
-        codex_queue.init_db()
+        tasks = task_service or codex_queue.get_task_service()
+        tasks.initialize()
         while True:
             with state.lock:
                 if state.stop_after_current:
@@ -1049,7 +1029,7 @@ def run_worker_until_empty(
                     notify("Worker stopped before starting another task.")
                     return
 
-            task = codex_queue.get_next_task()
+            task = tasks.next_runnable_task()
             if task is None:
                 notify("No executable tasks found. Worker is idle.")
                 return
@@ -1061,6 +1041,7 @@ def run_worker_until_empty(
                 telegram_enabled=config.worker_telegram_approvals,
                 telegram_verbosity=config.telegram_verbosity,
                 echo_output=config.echo_output,
+                task_service=tasks,
             )
     except Exception as exc:
         with state.lock:
@@ -1079,10 +1060,11 @@ class TelegramControlBot:
 
     def __init__(
         self,
-        bridge: TelegramApprovalBridge,
+        bridge: TelegramTransport,
         config: TelegramControlConfig,
         voice_transcriber: Optional[VoiceTranscriber] = None,
         clock: Callable[[], float] = time.monotonic,
+        task_service: Optional[TaskApplicationService] = None,
     ) -> None:
         """
         Initialize the Telegram control bot.
@@ -1096,6 +1078,9 @@ class TelegramControlBot:
                 Optional local speech-to-text provider.
             clock:
                 Monotonic clock used to expire transient interaction state.
+            task_service:
+                Shared queue application service. Tests may inject an isolated
+                implementation without changing Telegram routing.
 
         Returns:
             None.
@@ -1130,6 +1115,7 @@ class TelegramControlBot:
         )
         self.voice_transcriber = voice_transcriber
         self.clock = clock
+        self.task_service = task_service or codex_queue.get_task_service()
         self.worker_state = WorkerState()
         self.pending_voice_learns: dict[str, PendingVoiceLearn] = {}
         self.next_reply_markup: Optional[dict] = None
@@ -1354,7 +1340,7 @@ class TelegramControlBot:
         """
 
         limit = validate_remote_integer(limit, "Task limit", 1, MAX_TELEGRAM_TASK_LIMIT)
-        rows = recent_task_rows(limit)
+        rows = recent_task_rows(limit, self.task_service)
         text = format_recent_tasks_view(rows)
         self.next_reply_markup = build_tasks_keyboard(rows)
         return text
@@ -1522,7 +1508,7 @@ class TelegramControlBot:
             self.worker_state.stop_after_current = False
             thread = threading.Thread(
                 target=run_worker_until_empty,
-                args=(self.worker_state, self.config, self.send),
+                args=(self.worker_state, self.config, self.send, self.task_service),
                 daemon=True,
             )
             self.worker_state.thread = thread
@@ -1567,8 +1553,7 @@ class TelegramControlBot:
         if not path_is_allowed(resolved, self.config.allowed_workdirs):
             allowed = "\n".join(self.config.allowed_workdirs)
             raise TelegramControlError(f"Workdir is not allowed: {resolved}\nAllowed roots:\n{allowed}")
-        codex_queue.init_db()
-        codex_queue.add_task(
+        self.task_service.add_task(
             title=title,
             prompt=prompt,
             workdir=resolved,
@@ -1590,11 +1575,15 @@ class TelegramControlBot:
         """
 
         if command.action == "status":
-            return format_status(self.worker_state.is_running(), self.worker_state.last_error)
+            return format_status(
+                self.worker_state.is_running(),
+                self.worker_state.last_error,
+                self.task_service,
+            )
         if command.action == "tasks":
             return self.prepare_tasks_view(limit=command.limit or DEFAULT_TASK_LIMIT)
         if command.action == "tail":
-            return tail_task_output(task_id=command.task_id)
+            return tail_task_output(task_id=command.task_id, task_service=self.task_service)
         if command.action == "run":
             return self.start_worker()
         if command.action == "stop":
@@ -1637,7 +1626,11 @@ class TelegramControlBot:
             return HELP_TEXT
 
         if command == "/status" and len(parts) == 1:
-            return format_status(self.worker_state.is_running(), self.worker_state.last_error)
+            return format_status(
+                self.worker_state.is_running(),
+                self.worker_state.last_error,
+                self.task_service,
+            )
 
         if command == "/tasks":
             limit = parse_optional_remote_integer(parts, "Task limit")
@@ -1649,7 +1642,7 @@ class TelegramControlBot:
             task_id = parse_optional_remote_integer(parts, "Task id")
             if task_id is not None:
                 task_id = validate_remote_integer(task_id, "Task id", 1)
-            return tail_task_output(task_id=task_id)
+            return tail_task_output(task_id=task_id, task_service=self.task_service)
 
         if command == "/add":
             add = parse_add_command(stripped)
@@ -1837,13 +1830,13 @@ class TelegramControlBot:
             task_id = int(parts[1])
             action = parts[2]
             if action == "details":
-                text, keyboard = task_detail(task_id)
+                text, keyboard = task_detail(task_id, self.task_service)
                 if callback_id and hasattr(self.bridge, "answer_callback_query"):
                     self.bridge.answer_callback_query(str(callback_id), text=f"Task #{task_id}")
                 self.next_reply_markup = keyboard
                 return text
             if action == "tail":
-                text = tail_task_output(task_id=task_id)
+                text = tail_task_output(task_id=task_id, task_service=self.task_service)
                 if callback_id and hasattr(self.bridge, "answer_callback_query"):
                     self.bridge.answer_callback_query(str(callback_id), text="Output")
                 return text
