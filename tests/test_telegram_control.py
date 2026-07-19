@@ -18,6 +18,7 @@ from telegram_control import (
     parse_add_command,
     path_is_allowed,
     save_voice_command_alias,
+    write_private_atomic_text,
 )
 from voice_transcriber import StaticVoiceTranscriber, TranscriptionResult
 
@@ -578,6 +579,42 @@ class TelegramControlTests(unittest.TestCase):
         self.assertEqual(persisted.count("same phrase"), 1)
         self.assertNotIn('"status"', persisted)
         self.assertEqual(reloaded["same phrase"], "run")
+
+    def test_voice_alias_file_is_atomically_replaced_with_private_mode(self):
+        """Alias persistence should replace complete data with owner-only access."""
+
+        alias_path = Path(self.tmp.name) / "voice_aliases.json"
+
+        write_private_atomic_text(alias_path, '{"run": ["custom phrase"]}\n')
+
+        self.assertEqual(alias_path.read_text(encoding="utf-8"), '{"run": ["custom phrase"]}\n')
+        self.assertEqual(alias_path.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(list(alias_path.parent.glob(f".{alias_path.name}.*.tmp")), [])
+
+    def test_voice_alias_replace_failure_preserves_previous_file(self):
+        """A failed atomic replace should retain valid aliases and remove temporary data."""
+
+        alias_path = Path(self.tmp.name) / "voice_aliases.json"
+        alias_path.write_text('{"status": ["old phrase"]}\n', encoding="utf-8")
+
+        with mock.patch("telegram_control.os.replace", side_effect=OSError("replace failed")):
+            with self.assertRaisesRegex(TelegramControlError, "replace failed"):
+                write_private_atomic_text(alias_path, '{"run": ["new phrase"]}\n')
+
+        self.assertEqual(alias_path.read_text(encoding="utf-8"), '{"status": ["old phrase"]}\n')
+        self.assertEqual(list(alias_path.parent.glob(f".{alias_path.name}.*.tmp")), [])
+
+    def test_voice_alias_write_failure_is_normalized_and_cleaned(self):
+        """A local write setup failure should be recoverable and leak no temporary file."""
+
+        alias_path = Path(self.tmp.name) / "voice_aliases.json"
+
+        with mock.patch("telegram_control.os.fdopen", side_effect=OSError("disk full")):
+            with self.assertRaisesRegex(TelegramControlError, "disk full"):
+                write_private_atomic_text(alias_path, '{"run": ["new phrase"]}\n')
+
+        self.assertFalse(alias_path.exists())
+        self.assertEqual(list(alias_path.parent.glob(f".{alias_path.name}.*.tmp")), [])
 
     def test_learn_command_rejects_add_alias(self):
         """Learned aliases should not target structured add commands."""

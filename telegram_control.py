@@ -675,6 +675,43 @@ def load_voice_command_aliases(path: str) -> dict[str, str]:
     return aliases
 
 
+def write_private_atomic_text(path: Path, content: str) -> None:
+    """Atomically replace a local state file with owner-only permissions."""
+
+    file_descriptor: Optional[int] = None
+    temporary_path: Optional[Path] = None
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        file_descriptor, temporary_name = tempfile.mkstemp(
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            dir=str(path.parent),
+        )
+        temporary_path = Path(temporary_name)
+        os.fchmod(file_descriptor, 0o600)
+        output_file = os.fdopen(file_descriptor, "w", encoding="utf-8")
+        file_descriptor = None
+        with output_file:
+            output_file.write(content)
+            output_file.flush()
+            os.fsync(output_file.fileno())
+        os.replace(temporary_path, path)
+        temporary_path = None
+    except OSError as exc:
+        raise TelegramControlError(f"Could not write voice aliases file {path}: {exc}") from exc
+    finally:
+        if file_descriptor is not None:
+            try:
+                os.close(file_descriptor)
+            except OSError:
+                pass
+        if temporary_path is not None:
+            try:
+                temporary_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
 def save_voice_command_alias(path: str, action: str, phrase: str) -> None:
     """
     Persist one learned voice command alias.
@@ -710,8 +747,10 @@ def save_voice_command_alias(path: str, action: str, phrase: str) -> None:
 
     data.setdefault(action, []).append(phrase)
 
-    alias_path.parent.mkdir(parents=True, exist_ok=True)
-    alias_path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    write_private_atomic_text(
+        alias_path,
+        json.dumps(data, indent=2, sort_keys=True) + "\n",
+    )
 
 
 def unique_normalized_phrases(values: list[str]) -> list[str]:

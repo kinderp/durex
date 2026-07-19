@@ -315,6 +315,10 @@ Aliases are stored locally in:
 .durex_voice_aliases.json
 ```
 
+The alias file is replaced atomically with owner-only permissions (`0600`). A
+failed write leaves the previous valid file in place and is reported as a
+Telegram command rejection.
+
 You can choose another path:
 
 ```bash
