@@ -582,7 +582,13 @@ class TelegramApprovalBridge:
             payload["reply_markup"] = reply_markup
 
         data = self.api_call("sendMessage", payload)
-        return int(data["result"]["message_id"])
+        result = data.get("result")
+        if not isinstance(result, dict):
+            raise TelegramBridgeError("Telegram sendMessage returned an invalid result.")
+        message_id = result.get("message_id")
+        if isinstance(message_id, bool) or not isinstance(message_id, int):
+            raise TelegramBridgeError("Telegram sendMessage returned an invalid message id.")
+        return message_id
 
     def send_approval_request(self, approval: TelegramApprovalRequest) -> int:
         """
