@@ -217,11 +217,13 @@ class DurableWorkerSupervisor:
         finally:
             heartbeat_stop.set()
             heartbeat.join(timeout=self.heartbeat_seconds + 1.0)
-            self._finalize_abandoned_claim(claim, cancellation)
-            with self._lock:
-                self._current_claim = None
-                self._cancellation = None
-                self._pending_interaction = False
+            try:
+                self._finalize_abandoned_claim(claim, cancellation)
+            finally:
+                with self._lock:
+                    self._current_claim = None
+                    self._cancellation = None
+                    self._pending_interaction = False
 
     def _heartbeat_loop(
         self,

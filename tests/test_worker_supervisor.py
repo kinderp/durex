@@ -6,6 +6,7 @@ import tempfile
 import threading
 from pathlib import Path
 import unittest
+from unittest import mock
 
 from runtime_contracts import RunnerOutputEvent
 from task_services import SQLiteTaskRepository, TaskApplicationService
@@ -198,6 +199,30 @@ class DurableWorkerSupervisorTests(unittest.TestCase):
         snapshot = supervisor.snapshot()
         self.assertIsNone(snapshot.current_task_id)
         self.assertIn("telegram unavailable", snapshot.last_error)
+
+    def test_finalization_error_still_clears_in_memory_claim(self):
+        """Cleanup failure must not leave a phantom current run in status."""
+
+        self.add_task("cleanup failure")
+        supervisor = DurableWorkerSupervisor(
+            self.tasks,
+            lambda _claim, _cancellation, _observe: None,
+            worker_id="worker-cleanup",
+            now=lambda: self.now,
+        )
+
+        with mock.patch.object(
+            self.tasks,
+            "task_detail",
+            side_effect=sqlite3.OperationalError("database unavailable"),
+        ):
+            supervisor.run(stop_when_empty=True, check_interval=0)
+
+        snapshot = supervisor.snapshot()
+        self.assertFalse(snapshot.running)
+        self.assertIsNone(snapshot.current_task_id)
+        self.assertIsNone(snapshot.current_run_id)
+        self.assertIn("database unavailable", snapshot.last_error)
 
 
 if __name__ == "__main__":
