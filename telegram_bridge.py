@@ -532,25 +532,6 @@ class TelegramApprovalBridge:
         data = self.api_call("sendMessage", payload)
         return int(data["result"]["message_id"])
 
-    def answer_callback_query(self, callback_query_id: str, text: Optional[str] = None) -> None:
-        """
-        Acknowledge one Telegram inline callback query.
-
-        Args:
-            callback_query_id:
-                Telegram callback query id.
-            text:
-                Optional short toast text shown by Telegram.
-
-        Returns:
-            None.
-        """
-
-        payload: dict[str, Any] = {"callback_query_id": callback_query_id}
-        if text:
-            payload["text"] = text
-        self.api_call("answerCallbackQuery", payload)
-
     def send_approval_request(self, approval: TelegramApprovalRequest) -> int:
         """
         Send the approval request message with inline buttons.
