@@ -627,6 +627,7 @@ Then add one task per folder. This keeps Codex isolated and avoids mixing files 
 | [`docs/GITHUB_TEMPLATES.md`](docs/GITHUB_TEMPLATES.md) | Copy-ready milestone, issue, PR, review and finding templates |
 | [`docs/CLI_DOC_AUTOMATION.md`](docs/CLI_DOC_AUTOMATION.md) | CLI documentation drift check and generator roadmap |
 | [`docs/SYSTEM_OVERVIEW.md`](docs/SYSTEM_OVERVIEW.md) | Whole-system map and Python file responsibilities |
+| [`docs/APPLICATION_SERVICES.md`](docs/APPLICATION_SERVICES.md) | Task service, repository, runner-event and transport boundaries |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | High-level architecture and data model |
 | [`docs/SEQUENCE_DIAGRAMS.md`](docs/SEQUENCE_DIAGRAMS.md) | Function-level runtime flows |
 | [`docs/PTY_VS_EVENTS.md`](docs/PTY_VS_EVENTS.md) | Comparison between PTY and structured events |

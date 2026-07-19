@@ -38,6 +38,22 @@ pty_runner
    :undoc-members:
    :show-inheritance:
 
+runtime_contracts
+-----------------
+
+.. automodule:: runtime_contracts
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+task_services
+-------------
+
+.. automodule:: task_services
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
 telegram_bridge
 ---------------
 

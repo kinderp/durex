@@ -34,6 +34,7 @@ flowchart TD
     User[User or Telegram operator]
     CLI[codex_queue.py]
     Control[telegram_control.py]
+    Services[task_services.py]
     VoiceParser[voice_commands.py]
     VoiceSTT[voice_transcriber.py]
     DB[(SQLite task queue)]
@@ -52,11 +53,12 @@ flowchart TD
     User -->|Telegram voice message| VoiceSTT
     VoiceSTT -->|local transcript| VoiceParser
     VoiceParser -->|structured command| Control
-    CLI -->|add/list/run/check| DB
-    Control -->|authorized queue command| DB
+    CLI -->|task operation| Services
+    Control -->|authorized task operation| Services
+    Services -->|repository operation| DB
     CLI -->|start worker| Worker
     Control -->|/run starts worker thread| Worker
-    Worker -->|claim ready task| DB
+    Worker -->|select ready task| Services
     Worker -->|choose configured runner| Runner
     Runner -->|non-interactive task| Subprocess
     Runner -->|interactive PTY task| PTY
@@ -71,8 +73,8 @@ flowchart TD
     Phone -->|button callback| Bridge
     Bridge -->|ApprovalDecision| PTY
     PTY -->|write y or n, or stop| Codex
-    Subprocess -->|output and return code| DB
-    PTY -->|output and return code| DB
+    Subprocess -->|output and return code| Services
+    PTY -->|output and return code| Services
 ```
 
 ### Map nodes
@@ -80,13 +82,16 @@ flowchart TD
 `User or Telegram operator` is the human who adds tasks, starts the worker,
 checks status, approves prompts, or operates the queue remotely.
 
-`codex_queue.py` is the local CLI and queue coordinator. It owns SQLite setup,
-task creation, task selection, runner dispatch, usage-limit handling, and command
-line subcommands.
+`codex_queue.py` is the local CLI and runner coordinator. Its compatibility
+functions delegate queue operations to `task_services.py`; it owns runner
+dispatch, usage-limit handling, and command-line subcommands.
 
 `telegram_control.py` is the Telegram command router. It lets the authorized
 Telegram chat inspect and operate the queue without accepting arbitrary shell
 input.
+
+`task_services.py` owns task records, the repository protocol, all task SQL, and
+the application service shared by CLI and Telegram adapters.
 
 `voice_transcriber.py` is the optional local speech-to-text layer used by
 Telegram voice commands.
@@ -134,11 +139,15 @@ remote-control commands.
 `User -> voice_transcriber.py -> voice_commands.py -> telegram_control.py` is
 triggered by Telegram voice messages when `DUREX_VOICE_ENABLED=1`.
 
-`codex_queue.py -> SQLite task queue` is triggered when local CLI commands add,
-list, update, or read tasks.
+`codex_queue.py -> task_services.py` is triggered when local CLI or worker code
+adds, lists, updates, or selects tasks.
 
-`telegram_control.py -> SQLite task queue` is triggered only after the Telegram
-message comes from `DUREX_TELEGRAM_CHAT_ID`.
+`telegram_control.py -> task_services.py` is triggered only after the Telegram
+message comes from `DUREX_TELEGRAM_CHAT_ID`. The command router contains no task
+SQL.
+
+`task_services.py -> SQLite task queue` is triggered by repository operations
+from either entry point.
 
 `Worker loop -> SQLite task queue` is triggered before each task run when the
 worker asks for the next executable task.
@@ -194,14 +203,12 @@ Details:
 
 ### `codex_queue.py`
 
-`codex_queue.py` is the main entry point and queue owner.
+`codex_queue.py` is the main CLI entry point and runner coordinator.
 
 It is responsible for:
 
-- creating the SQLite schema;
-- adding and listing tasks;
-- selecting the next runnable task;
-- storing task status, attempts, output, errors, session id, and reset time;
+- exposing compatibility functions for task creation, listing, selection, and
+  updates through the shared application service;
 - detecting usage-limit output;
 - building Codex commands;
 - dispatching tasks to subprocess mode or PTY mode;
@@ -209,8 +216,8 @@ It is responsible for:
 - exposing CLI commands such as `init`, `add`, `list`, `run`, `telegram-check`,
   and `telegram-control`.
 
-Read this file first when you want to understand task persistence, scheduling,
-usage-limit handling, and the CLI surface.
+Read this file first when you want to understand scheduling, usage-limit
+handling, runner dispatch, and the CLI surface.
 
 Details:
 
@@ -218,6 +225,31 @@ Details:
 - Task states: [ARCHITECTURE.md - Task lifecycle](ARCHITECTURE.md#task-lifecycle)
 - Normal execution: [SEQUENCE_DIAGRAMS.md - Normal non-interactive task execution](SEQUENCE_DIAGRAMS.md#1-normal-non-interactive-task-execution)
 - Usage limits: [SEQUENCE_DIAGRAMS.md - Usage limit reached](SEQUENCE_DIAGRAMS.md#2-usage-limit-reached)
+
+### `task_services.py`
+
+`task_services.py` is the shared persistence and application boundary.
+
+It is responsible for:
+
+- the transport-neutral `TaskRecord`;
+- the `TaskRepository` protocol and SQLite implementation;
+- creating the task schema and executing all task SQL;
+- queue ordering, runnable selection, status counts, task detail, and output
+  lookup;
+- normal updates and atomic expected-status transitions;
+- the `TaskApplicationService` used by CLI, worker, and Telegram adapters.
+
+Details: [APPLICATION_SERVICES.md](APPLICATION_SERVICES.md)
+
+### `runtime_contracts.py`
+
+`runtime_contracts.py` defines transport-neutral protocols and event types for
+task runners, worker supervision, and Telegram transport. These contracts are
+the migration targets for the dispatcher, live output, and durable supervisor
+issues; they do not import Telegram or SQLite implementation types.
+
+Details: [APPLICATION_SERVICES.md - Runtime contracts](APPLICATION_SERVICES.md#runtime-contracts)
 
 ### `pty_runner.py`
 
@@ -382,7 +414,11 @@ Details:
 The tests document the intended behavior of the system boundaries.
 
 `tests/test_codex_queue.py` covers database and queue-level behavior, including
-Telegram check helpers and session extraction.
+finalization, retry, runner dispatch, Telegram check helpers, and session
+extraction.
+
+`tests/test_task_services.py` covers task ordering, usage-limit eligibility,
+atomic expected-status transitions, recency ordering, and output lookup.
 
 `tests/test_pty_runner.py` covers PTY execution and verifies that approval
 prompts are handled once.
@@ -418,8 +454,8 @@ The user creates work through the local CLI or through Telegram remote control.
 Local path:
 
 1. The user runs `python3 codex_queue.py add ...`.
-2. `codex_queue.py` initializes the database if needed.
-3. A row is inserted into the task table with `PENDING` status.
+2. `codex_queue.py` delegates to `TaskApplicationService`.
+3. `SQLiteTaskRepository` initializes storage and inserts a `PENDING` row.
 
 Telegram path:
 
@@ -428,7 +464,8 @@ Telegram path:
 3. The chat id is checked against `DUREX_TELEGRAM_CHAT_ID`.
 4. The `/add` header is parsed with shell-like quoting.
 5. The requested workdir is checked against allowed roots.
-6. `codex_queue.add_task()` inserts the task.
+6. The injected `TaskApplicationService` inserts the task through its
+   repository.
 
 Details:
 
@@ -442,7 +479,7 @@ Telegram `/run`.
 
 The scheduling loop:
 
-1. reads the next runnable task from SQLite;
+1. asks `TaskApplicationService` for the next runnable task;
 2. skips tasks blocked by `WAITING_LIMIT` until `reset_at`;
 3. marks the selected task as `RUNNING`;
 4. increments attempts;
