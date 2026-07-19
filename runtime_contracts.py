@@ -74,6 +74,7 @@ class RunnerResult:
 
     returncode: int
     output: str
+    lifecycle: RunnerLifecycle = RunnerLifecycle.COMPLETED
 
 
 class TaskRunner(Protocol):

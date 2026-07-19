@@ -9,6 +9,7 @@ import selectors
 import subprocess
 from typing import Optional, Sequence
 
+from process_control import RunCancellation, terminate_process_group
 from runner_events import RunnerEventEmitter
 from runtime_contracts import RunnerEventSink, RunnerLifecycle, RunnerResult
 
@@ -16,14 +17,7 @@ from runtime_contracts import RunnerEventSink, RunnerLifecycle, RunnerResult
 def _stop_process(process: subprocess.Popen, timeout_seconds: float = 5.0) -> None:
     """Stop a subprocess after an event consumer aborts the run."""
 
-    if process.poll() is not None:
-        return
-    process.terminate()
-    try:
-        process.wait(timeout=timeout_seconds)
-    except subprocess.TimeoutExpired:
-        process.kill()
-        process.wait()
+    terminate_process_group(process, timeout_seconds=timeout_seconds)
 
 
 def run_subprocess_command(
@@ -33,6 +27,7 @@ def run_subprocess_command(
     cwd: Optional[str] = None,
     event_sink: Optional[RunnerEventSink] = None,
     run_id: Optional[str] = None,
+    cancellation: Optional[RunCancellation] = None,
 ) -> RunnerResult:
     """Run a command while streaming stdout and stderr as ordered events."""
 
@@ -43,6 +38,7 @@ def run_subprocess_command(
         stderr=subprocess.PIPE,
         text=False,
         bufsize=0,
+        start_new_session=True,
     )
     if process.stdout is None or process.stderr is None:
         _stop_process(process)
@@ -60,6 +56,16 @@ def run_subprocess_command(
         },
     }
     selector = selectors.DefaultSelector()
+    cancelled = False
+
+    def cancel_process() -> None:
+        nonlocal cancelled
+        if process.poll() is None:
+            cancelled = True
+            terminate_process_group(process)
+
+    if cancellation is not None:
+        cancellation.bind_terminator(cancel_process)
 
     try:
         for stream in streams:
@@ -87,17 +93,29 @@ def run_subprocess_command(
                 selector.unregister(stream)
 
         returncode = int(process.wait())
+        lifecycle = (
+            RunnerLifecycle.CANCELLED
+            if cancelled
+            else RunnerLifecycle.COMPLETED if returncode == 0 else RunnerLifecycle.FAILED
+        )
         emitter.lifecycle(
-            RunnerLifecycle.COMPLETED if returncode == 0 else RunnerLifecycle.FAILED,
+            lifecycle,
             returncode=returncode,
+            detail=cancellation.reason if cancelled and cancellation is not None else None,
         )
         stdout = "".join(streams[process.stdout]["parts"])
         stderr = "".join(streams[process.stderr]["parts"])
-        return RunnerResult(returncode=returncode, output=stdout + "\n" + stderr)
+        return RunnerResult(
+            returncode=returncode,
+            output=stdout + "\n" + stderr,
+            lifecycle=lifecycle,
+        )
     except BaseException:
         _stop_process(process)
         raise
     finally:
+        if cancellation is not None:
+            cancellation.unbind_terminator(cancel_process)
         selector.close()
         process.stdout.close()
         process.stderr.close()

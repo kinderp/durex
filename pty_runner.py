@@ -47,6 +47,7 @@ from typing import Optional, Sequence
 
 from approval_detector import ApprovalRequest, detect_approval_request
 from approval_policy import ApprovalPolicy, PolicyAction, PolicyDecision, default_policy
+from process_control import RunCancellation, terminate_process_group
 from runner_events import RunnerEventEmitter
 from runtime_contracts import RunnerEventSink, RunnerInteractionState, RunnerLifecycle
 from telegram_bridge import (
@@ -142,6 +143,7 @@ class PtyRunResult:
     returncode: int
     output: str
     approval_events: list[ApprovalAuditEvent]
+    lifecycle: RunnerLifecycle = RunnerLifecycle.COMPLETED
 
 
 class PtyRunnerError(RuntimeError):
@@ -304,20 +306,7 @@ def terminate_process(process: subprocess.Popen, timeout_seconds: float = 5.0) -
         Final process return code.
     """
 
-    if process.poll() is not None:
-        return int(process.returncode or 0)
-
-    process.terminate()
-    deadline = time.time() + timeout_seconds
-
-    while time.time() < deadline:
-        code = process.poll()
-        if code is not None:
-            return int(code)
-        time.sleep(0.1)
-
-    process.kill()
-    return int(process.wait())
+    return terminate_process_group(process, timeout_seconds=timeout_seconds)
 
 
 def spawn_pty_process(cmd: Sequence[str], cwd: Optional[str] = None) -> tuple[subprocess.Popen, int]:
@@ -479,6 +468,7 @@ def run_pty_command(
     config: Optional[PtyRunnerConfig] = None,
     event_sink: Optional[RunnerEventSink] = None,
     run_id: Optional[str] = None,
+    cancellation: Optional[RunCancellation] = None,
 ) -> PtyRunResult:
     """
     Run a command in a pseudo-terminal and handle approval prompts.
@@ -531,6 +521,16 @@ def run_pty_command(
     audit_events: list[ApprovalAuditEvent] = []
     post_exit_deadline: Optional[float] = None
     decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+    cancelled = False
+
+    def cancel_process() -> None:
+        nonlocal cancelled
+        if process.poll() is None:
+            cancelled = True
+            terminate_process_group(process)
+
+    if cancellation is not None:
+        cancellation.bind_terminator(cancel_process)
 
     def append_output(chunk: str) -> None:
         if not chunk:
@@ -608,6 +608,7 @@ def run_pty_command(
                             returncode=returncode,
                             output="".join(output_parts),
                             approval_events=audit_events,
+                            lifecycle=RunnerLifecycle.CANCELLED,
                         )
                     rolling_buffer = ""
 
@@ -624,14 +625,21 @@ def run_pty_command(
 
         append_output(decoder.decode(b"", final=True))
         returncode = int(process.wait())
+        lifecycle = (
+            RunnerLifecycle.CANCELLED
+            if cancelled
+            else RunnerLifecycle.COMPLETED if returncode == 0 else RunnerLifecycle.FAILED
+        )
         events.lifecycle(
-            RunnerLifecycle.COMPLETED if returncode == 0 else RunnerLifecycle.FAILED,
+            lifecycle,
             returncode=returncode,
+            detail=cancellation.reason if cancelled and cancellation is not None else None,
         )
         return PtyRunResult(
             returncode=returncode,
             output="".join(output_parts),
             approval_events=audit_events,
+            lifecycle=lifecycle,
         )
 
     except BaseException:
@@ -639,6 +647,8 @@ def run_pty_command(
             terminate_process(process)
         raise
     finally:
+        if cancellation is not None:
+            cancellation.unbind_terminator(cancel_process)
         try:
             os.close(master_fd)
         except OSError:
