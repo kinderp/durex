@@ -260,6 +260,30 @@ class TelegramControlTests(unittest.TestCase):
         self.assertIsNone(response)
         self.assertEqual(bridge.messages, [])
 
+    def test_ignores_unauthorized_callback(self):
+        """Inline controls from another chat must not trigger worker actions."""
+
+        bridge = FakeBridge(chat_id=123)
+        bot = TelegramControlBot(
+            bridge=bridge,
+            config=TelegramControlConfig(allowed_workdirs=[self.tmp.name]),
+        )
+
+        response = bot.handle_update(
+            {
+                "callback_query": {
+                    "id": "unauthorized-callback",
+                    "message": {"chat": {"id": 999}},
+                    "data": "durexcontrol:run",
+                }
+            }
+        )
+
+        self.assertIsNone(response)
+        self.assertFalse(bot.worker_state.is_running())
+        self.assertEqual(bridge.messages, [])
+        self.assertEqual(bridge.callback_answers, [])
+
     def test_status_accepts_bot_suffix(self):
         """Status command parsing should support @BotName suffixes."""
 
