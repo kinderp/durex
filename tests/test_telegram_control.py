@@ -303,6 +303,23 @@ class TelegramControlTests(unittest.TestCase):
 
         self.assertFalse(Path(bridge.downloaded_files[-1]).exists())
 
+    def test_failed_voice_download_returns_command_error(self):
+        """Telegram download errors should be reported without escaping the router."""
+
+        bridge = FailingDownloadBridge(chat_id=123)
+        bot = TelegramControlBot(
+            bridge=bridge,
+            config=TelegramControlConfig(allowed_workdirs=[self.tmp.name], voice_enabled=True),
+            voice_transcriber=StaticVoiceTranscriber("stato", language="it"),
+        )
+
+        response = bot.handle_update(
+            {"message": {"chat": {"id": 123}, "voice": {"file_id": "voice-download-failure"}}}
+        )
+
+        self.assertEqual(response, "Command rejected: download failed")
+        self.assertEqual(bridge.messages[-1], response)
+
     def test_voice_status_command(self):
         """A transcribed Italian status voice command should route to status."""
 

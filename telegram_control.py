@@ -1903,7 +1903,14 @@ class TelegramControlBot:
                 response += f"\n\nLearn candidate: {candidates[0]}"
             self.send(response, reply_markup=reply_markup)
             return response
-        except (TelegramControlError, VoiceCommandError, VoiceTranscriptionError, ValueError, sqlite3.Error) as exc:
+        except (
+            TelegramBridgeError,
+            TelegramControlError,
+            VoiceCommandError,
+            VoiceTranscriptionError,
+            ValueError,
+            sqlite3.Error,
+        ) as exc:
             response = f"Command rejected: {exc}"
 
         reply_markup = self.next_reply_markup
