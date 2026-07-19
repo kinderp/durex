@@ -4,7 +4,15 @@ import inspect
 from typing import get_type_hints
 import unittest
 
-from runtime_contracts import TelegramTransport, TelegramTransportConfig
+from runtime_contracts import (
+    RunnerInteractionEvent,
+    RunnerInteractionState,
+    RunnerLifecycle,
+    RunnerLifecycleEvent,
+    RunnerOutputEvent,
+    TelegramTransport,
+    TelegramTransportConfig,
+)
 from telegram_bridge import TelegramApprovalBridge
 
 
@@ -63,6 +71,26 @@ class RuntimeContractTests(unittest.TestCase):
         self.assertIsInstance(chat_id_property, property)
         self.assertIsNone(chat_id_property.fset)
         self.assertIs(get_type_hints(chat_id_property.fget)["return"], int)
+
+    def test_runner_events_share_run_identity_and_monotonic_sequence(self):
+        """Every event kind carries the ordering identity used by consumers."""
+
+        events = [
+            RunnerLifecycleEvent(1, RunnerLifecycle.STARTED, run_id="run-1", sequence=1),
+            RunnerOutputEvent(1, 2, "chunk", run_id="run-1"),
+            RunnerInteractionEvent(
+                1,
+                "approval-1",
+                "approval",
+                "Proceed?",
+                run_id="run-1",
+                sequence=3,
+                state=RunnerInteractionState.REQUESTED,
+            ),
+        ]
+
+        self.assertEqual([event.run_id for event in events], ["run-1"] * 3)
+        self.assertEqual([event.sequence for event in events], [1, 2, 3])
 
 
 if __name__ == "__main__":
