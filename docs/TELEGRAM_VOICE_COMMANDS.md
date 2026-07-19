@@ -23,6 +23,11 @@ No audio is sent to a third-party transcription API by Durex.
 Telegram still stores and serves the original voice message because it is sent
 through Telegram. Durex downloads it through the Telegram Bot API.
 
+Durex stores each download in a private, unpredictable temporary file and
+deletes it immediately after local transcription, including when transcription
+or command parsing fails. The audio is removed before a parsed command is
+executed. Telegram's own copy follows Telegram's retention behavior.
+
 ## Install Voice Dependencies
 
 Create and activate a virtual environment:

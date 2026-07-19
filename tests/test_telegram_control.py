@@ -30,6 +30,7 @@ class FakeBridge:
         self.messages = []
         self.reply_markups = []
         self.callback_answers = []
+        self.downloaded_files = []
 
     def send_message(self, text, reply_markup=None):
         """Record outgoing messages and return a deterministic message id."""
@@ -53,6 +54,7 @@ class FakeBridge:
 
         Path(destination).parent.mkdir(parents=True, exist_ok=True)
         Path(destination).write_bytes(b"fake voice")
+        self.downloaded_files.append(destination)
         return destination
 
 
@@ -74,6 +76,16 @@ class FlakyBridge(FakeBridge):
         if self.poll_calls == 2:
             return [{"message": {"chat": {"id": 123}, "text": "/status"}}]
         raise KeyboardInterrupt
+
+
+class FailingDownloadBridge(FakeBridge):
+    """Bridge double that fails after receiving a temporary destination."""
+
+    def download_file(self, file_path, destination):
+        """Record the destination and simulate a Telegram download failure."""
+
+        self.downloaded_files.append(destination)
+        raise TelegramBridgeError("download failed")
 
 
 class MappingVoiceTranscriber:
@@ -276,6 +288,21 @@ class TelegramControlTests(unittest.TestCase):
 
         self.assertIn("Voice commands are disabled", response)
 
+    def test_failed_voice_download_removes_temporary_file(self):
+        """A failed Telegram download should not leave its temporary file behind."""
+
+        bridge = FailingDownloadBridge(chat_id=123)
+        bot = TelegramControlBot(
+            bridge=bridge,
+            config=TelegramControlConfig(allowed_workdirs=[self.tmp.name], voice_enabled=True),
+            voice_transcriber=StaticVoiceTranscriber("stato", language="it"),
+        )
+
+        with self.assertRaisesRegex(TelegramBridgeError, "download failed"):
+            bot.download_voice_message({"file_id": "voice-download-failure"})
+
+        self.assertFalse(Path(bridge.downloaded_files[-1]).exists())
+
     def test_voice_status_command(self):
         """A transcribed Italian status voice command should route to status."""
 
@@ -292,6 +319,7 @@ class TelegramControlTests(unittest.TestCase):
 
         self.assertIn("Voice transcript: stato", response)
         self.assertIn("Durex status", response)
+        self.assertFalse(Path(bridge.downloaded_files[-1]).exists())
 
     def test_voice_add_command_uses_alias_and_creates_task(self):
         """A transcribed add command should use aliases and enqueue a task."""
@@ -688,6 +716,7 @@ class TelegramControlTests(unittest.TestCase):
         self.assertIn("Voice command not recognized", response)
         self.assertIn("it: bonjour", response)
         self.assertIn("en: bonjour", response)
+        self.assertFalse(Path(bridge.downloaded_files[-1]).exists())
 
     def test_voice_auto_mode_forces_supported_language_before_free_detection(self):
         """Auto mode should probe supported languages before free language detection."""

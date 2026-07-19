@@ -1668,8 +1668,14 @@ class TelegramControlBot:
             raise TelegramControlError("Telegram did not return a voice file path.")
 
         suffix = Path(str(file_path)).suffix or ".ogg"
-        destination = Path(tempfile.gettempdir()) / "durex_voice" / f"{file_id}{suffix}"
-        return self.bridge.download_file(str(file_path), str(destination))
+        with tempfile.NamedTemporaryFile(prefix="durex_voice_", suffix=suffix, delete=False) as temp_file:
+            destination = temp_file.name
+
+        try:
+            return self.bridge.download_file(str(file_path), destination)
+        except BaseException:
+            Path(destination).unlink(missing_ok=True)
+            raise
 
     def transcribe_voice_command(self, audio_path: str) -> tuple[str, VoiceCommand, Optional[str], list[str]]:
         """
@@ -1756,7 +1762,10 @@ class TelegramControlBot:
             raise TelegramControlError("Voice transcription is not configured.")
 
         audio_path = self.download_voice_message(voice)
-        transcript, command, detected_language, attempts = self.transcribe_voice_command(audio_path)
+        try:
+            transcript, command, detected_language, attempts = self.transcribe_voice_command(audio_path)
+        finally:
+            Path(audio_path).unlink(missing_ok=True)
 
         if (
             self.config.voice_language is None
@@ -1792,7 +1801,10 @@ class TelegramControlBot:
             raise TelegramControlError("Voice transcription is not configured.")
         audio_path = self.download_voice_message(voice)
         language = self.config.voice_language or (self.config.voice_allowed_languages[0] if self.config.voice_allowed_languages else None)
-        result = self.voice_transcriber.transcribe(audio_path, language=language)
+        try:
+            result = self.voice_transcriber.transcribe(audio_path, language=language)
+        finally:
+            Path(audio_path).unlink(missing_ok=True)
         transcript = result.text.strip()
         if not transcript:
             raise TelegramControlError("Voice transcription returned empty text.")
