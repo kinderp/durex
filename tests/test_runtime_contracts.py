@@ -4,7 +4,7 @@ import inspect
 from typing import get_type_hints
 import unittest
 
-from runtime_contracts import TelegramTransport
+from runtime_contracts import TelegramTransport, TelegramTransportConfig
 from telegram_bridge import TelegramApprovalBridge
 
 
@@ -46,6 +46,18 @@ class RuntimeContractTests(unittest.TestCase):
             inspect.signature(TelegramApprovalBridge.answer_callback_query).parameters[
                 "text"
             ].default,
+        )
+
+    def test_transport_configuration_is_read_only(self):
+        """The protocol should not permit replacing bridge-owned config."""
+
+        config_property = TelegramTransport.__dict__["config"]
+
+        self.assertIsInstance(config_property, property)
+        self.assertIsNone(config_property.fset)
+        self.assertIs(
+            get_type_hints(config_property.fget)["return"],
+            TelegramTransportConfig,
         )
 
 

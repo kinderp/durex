@@ -99,7 +99,9 @@ class TelegramTransportConfig(Protocol):
 class TelegramTransport(Protocol):
     """Telegram operations required by the control adapter."""
 
-    config: TelegramTransportConfig
+    @property
+    def config(self) -> TelegramTransportConfig:
+        """Return read-only transport authorization configuration."""
 
     def poll_updates(
         self,
