@@ -334,7 +334,7 @@ tasks
 tail
 run
 stop
-stop_current
+stop-current
 ```
 
 They cannot target `add`, because task creation needs structured fields such as

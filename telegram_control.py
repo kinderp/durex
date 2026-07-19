@@ -2283,7 +2283,7 @@ Prompt text for Codex...
 /tail [task_id] - show task output tail
 /stop - stop worker before the next task starts
 /stop-current - cancel the current Codex task
-/learn <status|tasks|tail|run|stop> <spoken phrase> - save a voice alias
+/learn <status|tasks|tail|run|stop|stop-current> <spoken phrase> - save a voice alias
 /add-wizard - add a task with buttons
 /config - show runtime toggles
 

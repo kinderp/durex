@@ -787,6 +787,29 @@ class TelegramControlTests(unittest.TestCase):
         self.assertIn('"status"', Path(alias_file).read_text(encoding="utf-8"))
         self.assertIn("abbia walker", Path(alias_file).read_text(encoding="utf-8"))
 
+    def test_learn_command_accepts_stop_current_target(self):
+        """Pronunciation aliases can target immediate current-run cancellation."""
+
+        alias_file = str(Path(self.tmp.name) / "voice_aliases.json")
+        bot = TelegramControlBot(
+            bridge=FakeBridge(chat_id=123),
+            config=TelegramControlConfig(
+                allowed_workdirs=[self.tmp.name],
+                voice_aliases_file=alias_file,
+            ),
+        )
+
+        response = bot.handle_text("/learn stop-current fermacorrente")
+
+        self.assertEqual(
+            response,
+            "Learned voice alias: 'fermacorrente' -> stop_current",
+        )
+        self.assertEqual(
+            bot.config.voice_command_aliases["fermacorrente"],
+            "stop_current",
+        )
+
     def test_reassigned_voice_alias_remains_stable_after_reload(self):
         """Relearning a phrase should replace its previous persisted action."""
 
