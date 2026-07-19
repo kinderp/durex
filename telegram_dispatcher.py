@@ -330,6 +330,7 @@ class TelegramUpdateDispatcher:
         retry_max_seconds: float = 30.0,
         on_poll_error: Optional[Callable[[TelegramBridgeError], None]] = None,
         max_deduplication_entries: int = DEFAULT_DEDUPLICATION_ENTRIES,
+        allowed_updates: Optional[list[str]] = None,
     ) -> None:
         if max_deduplication_entries < 1:
             raise ValueError("max_deduplication_entries must be positive")
@@ -340,6 +341,11 @@ class TelegramUpdateDispatcher:
         self.retry_base_seconds = retry_base_seconds
         self.retry_max_seconds = retry_max_seconds
         self.on_poll_error = on_poll_error
+        self.allowed_updates = tuple(
+            allowed_updates
+            if allowed_updates is not None
+            else ["message", "callback_query"]
+        )
         self._stop_event = threading.Event()
         self._seen_update_ids: OrderedDict[int, None] = OrderedDict()
         self._max_deduplication_entries = max_deduplication_entries
@@ -400,7 +406,7 @@ class TelegramUpdateDispatcher:
                 try:
                     updates = self.transport.poll_updates(
                         timeout=self.poll_timeout_seconds,
-                        allowed_updates=["message", "callback_query"],
+                        allowed_updates=list(self.allowed_updates),
                     )
                 except TelegramBridgeError as exc:
                     if self.on_poll_error is not None:
@@ -447,6 +453,7 @@ class StandaloneTelegramApprovalRuntime:
             transport=transport,
             approval_broker=self.broker,
             poll_timeout_seconds=poll_timeout_seconds,
+            allowed_updates=["callback_query"],
         )
         self._thread: Optional[threading.Thread] = None
 

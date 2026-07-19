@@ -280,6 +280,12 @@ class TelegramUpdateDispatcherTests(unittest.TestCase):
         decision = broker.wait_for_decision("active-id", timeout_seconds=0)
 
         self.assertEqual(len(transport.poll_calls), 3)
+        self.assertTrue(
+            all(
+                allowed_updates == ["message", "callback_query"]
+                for _timeout, allowed_updates in transport.poll_calls
+            )
+        )
         self.assertEqual([str(error) for error in errors], ["temporary failure"])
         self.assertEqual(decision.action, TelegramDecisionAction.DENY)
 
@@ -375,6 +381,18 @@ class TelegramApprovalGatewayTests(unittest.TestCase):
 
 class StandaloneTelegramApprovalRuntimeTests(unittest.TestCase):
     """Verify process-level standalone polling ownership."""
+
+    def test_standalone_dispatcher_requests_only_callback_updates(self):
+        transport = FakeApprovalTransport([[]])
+        runtime = StandaloneTelegramApprovalRuntime(transport, poll_timeout_seconds=0)
+
+        with self.assertRaises(KeyboardInterrupt):
+            runtime.dispatcher.run_forever()
+
+        self.assertEqual(
+            transport.poll_calls,
+            [(0, ["callback_query"]), (0, ["callback_query"])],
+        )
 
     def test_second_runtime_cannot_start_while_first_dispatcher_is_alive(self):
         first = StandaloneTelegramApprovalRuntime(FakeApprovalTransport())

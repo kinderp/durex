@@ -184,6 +184,11 @@ and process ownership is released by that thread only after it exits. If a poll
 outlives the expected shutdown bound, another standalone task is rejected
 instead of creating a competing poller.
 
+The control daemon subscribes to both `message` and `callback_query` updates.
+Standalone approval mode subscribes only to `callback_query` because it has no
+command handler; it does not fetch and silently discard Telegram control
+messages intended for a later control-daemon session.
+
 ## Running the modes
 
 Use one control daemon for queue commands and worker approvals:
