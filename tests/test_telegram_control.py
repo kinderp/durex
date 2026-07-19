@@ -14,9 +14,11 @@ from telegram_control import (
     TelegramControlError,
     TelegramControlBot,
     TelegramControlConfig,
+    WorkerState,
     load_voice_command_aliases,
     parse_add_command,
     path_is_allowed,
+    run_worker_until_empty,
     save_voice_command_alias,
     write_private_atomic_text,
 )
@@ -275,6 +277,43 @@ class TelegramControlTests(unittest.TestCase):
 
         self.assertEqual(add_response, "Task added: Injected")
         self.assertIn("PENDING: 1", status_response)
+
+    def test_worker_keeps_injected_service_through_task_lifecycle(self):
+        """Selection and runner writes must use the same task repository."""
+
+        task_service = codex_queue.get_task_service()
+        task_id = task_service.add_task(
+            title="Injected worker",
+            prompt="Complete through injected persistence.",
+            workdir=self.tmp.name,
+            priority=1,
+            max_attempts=1,
+        )
+        state = WorkerState()
+        config = TelegramControlConfig(
+            allowed_workdirs=[self.tmp.name],
+            runner_mode="subprocess",
+        )
+        completed = mock.Mock(returncode=0, stdout="worker done", stderr="")
+        notifications = []
+
+        with mock.patch.object(
+            codex_queue,
+            "get_task_service",
+            side_effect=AssertionError("global service lookup"),
+        ), mock.patch.object(codex_queue.subprocess, "run", return_value=completed):
+            run_worker_until_empty(state, config, notifications.append, task_service)
+
+        stored = task_service.task_detail(task_id)
+        self.assertEqual(stored.status, "COMPLETED")
+        self.assertEqual(stored.output, "worker done\n")
+        self.assertEqual(
+            notifications,
+            [
+                "Starting task #1: Injected worker",
+                "No executable tasks found. Worker is idle.",
+            ],
+        )
 
     def test_handle_add_message_rejects_disallowed_workdir(self):
         """Remote users must not enqueue tasks outside allowed workdir roots."""

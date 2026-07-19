@@ -339,7 +339,12 @@ def task_to_dict(task: TaskRecord) -> dict:
     return {key: task[key] for key in task.keys()}
 
 
-def finish_task_from_output(task: TaskRecord, output: str, returncode: int) -> None:
+def finish_task_from_output(
+    task: TaskRecord,
+    output: str,
+    returncode: int,
+    task_service: Optional[TaskApplicationService] = None,
+) -> None:
     """
     Convert runner output into final queue state.
 
@@ -352,17 +357,20 @@ def finish_task_from_output(task: TaskRecord, output: str, returncode: int) -> N
             Complete command output captured by the selected runner.
         returncode:
             Process exit status from subprocess or PTY mode.
+        task_service:
+            Persistence boundary that owns this task lifecycle.
 
     Returns:
         None. The function updates SQLite and prints the state transition.
     """
 
     task_id = int(task["id"])
+    tasks = task_service or get_task_service()
     found_session_id = extract_session_id(output) or task["session_id"]
     reset_at = extract_reset_at(output)
 
     if returncode == 0:
-        update_task(
+        tasks.update_task(
             task_id,
             status="COMPLETED",
             output=output,
@@ -377,7 +385,7 @@ def finish_task_from_output(task: TaskRecord, output: str, returncode: int) -> N
         if not reset_at:
             reset_at = (utc_now() + dt.timedelta(hours=DEFAULT_RETRY_HOURS)).isoformat()
 
-        update_task(
+        tasks.update_task(
             task_id,
             status="WAITING_LIMIT",
             output=output,
@@ -392,7 +400,7 @@ def finish_task_from_output(task: TaskRecord, output: str, returncode: int) -> N
 
     attempts_after_run = int(task["attempts"]) + 1
     if attempts_after_run < int(task["max_attempts"]):
-        update_task(
+        tasks.update_task(
             task_id,
             status="PENDING",
             output=output,
@@ -402,7 +410,7 @@ def finish_task_from_output(task: TaskRecord, output: str, returncode: int) -> N
         print(f"Task #{task_id} failed, but it will be retried.")
         return
 
-    update_task(
+    tasks.update_task(
         task_id,
         status="FAILED",
         output=output,
@@ -412,22 +420,33 @@ def finish_task_from_output(task: TaskRecord, output: str, returncode: int) -> N
     print(f"Task #{task_id} failed permanently.")
 
 
-def run_codex_subprocess(task: TaskRecord) -> None:
+def run_codex_subprocess(
+    task: TaskRecord,
+    task_service: Optional[TaskApplicationService] = None,
+) -> None:
     """
     Run one task using classic subprocess.run().
 
     Args:
         task:
             Runnable queue task.
+        task_service:
+            Persistence boundary that owns this task lifecycle.
 
     Returns:
         None. The task row is updated based on process output.
     """
 
     task_id = int(task["id"])
+    tasks = task_service or get_task_service()
     cmd = build_codex_command(task)
 
-    update_task(task_id, status="RUNNING", attempts=int(task["attempts"]) + 1, last_error=None)
+    tasks.update_task(
+        task_id,
+        status="RUNNING",
+        attempts=int(task["attempts"]) + 1,
+        last_error=None,
+    )
 
     print(f"\nStarting task #{task_id}: {task['title']}")
     print("Runner mode: subprocess")
@@ -443,9 +462,14 @@ def run_codex_subprocess(task: TaskRecord) -> None:
             timeout=None,
         )
         output = (result.stdout or "") + "\n" + (result.stderr or "")
-        finish_task_from_output(task, output=output, returncode=int(result.returncode))
+        finish_task_from_output(
+            task,
+            output=output,
+            returncode=int(result.returncode),
+            task_service=tasks,
+        )
     except Exception as exc:
-        update_task(task_id, status="FAILED", last_error=str(exc))
+        tasks.update_task(task_id, status="FAILED", last_error=str(exc))
         print(f"Task #{task_id} error: {exc}")
 
 
@@ -539,7 +563,13 @@ def telegram_check(discover_chat_id: bool, send_test: bool, message: str, poll_t
         print(f"Telegram test message sent: message_id={message_id}")
 
 
-def run_codex_pty(task: TaskRecord, telegram_enabled: bool, telegram_verbosity: str, echo_output: bool) -> None:
+def run_codex_pty(
+    task: TaskRecord,
+    telegram_enabled: bool,
+    telegram_verbosity: str,
+    echo_output: bool,
+    task_service: Optional[TaskApplicationService] = None,
+) -> None:
     """
     Run one task using the PTY approval bridge.
 
@@ -552,15 +582,23 @@ def run_codex_pty(task: TaskRecord, telegram_enabled: bool, telegram_verbosity: 
             Message detail level for Telegram approvals.
         echo_output:
             Whether PTY output should be mirrored locally.
+        task_service:
+            Persistence boundary that owns this task lifecycle.
 
     Returns:
         None. The task row is updated based on PTY result.
     """
 
     task_id = int(task["id"])
+    tasks = task_service or get_task_service()
     cmd = build_codex_command(task)
 
-    update_task(task_id, status="RUNNING", attempts=int(task["attempts"]) + 1, last_error=None)
+    tasks.update_task(
+        task_id,
+        status="RUNNING",
+        attempts=int(task["attempts"]) + 1,
+        last_error=None,
+    )
 
     print(f"\nStarting task #{task_id}: {task['title']}")
     print("Runner mode: pty")
@@ -578,16 +616,28 @@ def run_codex_pty(task: TaskRecord, telegram_enabled: bool, telegram_verbosity: 
             telegram_verbosity=telegram_verbosity,
             config=PtyRunnerConfig(echo_output=echo_output),
         )
-        finish_task_from_output(task, output=result.output, returncode=result.returncode)
+        finish_task_from_output(
+            task,
+            output=result.output,
+            returncode=result.returncode,
+            task_service=tasks,
+        )
     except TelegramBridgeError as exc:
-        update_task(task_id, status="FAILED", last_error=str(exc))
+        tasks.update_task(task_id, status="FAILED", last_error=str(exc))
         print(f"Telegram configuration error for task #{task_id}: {exc}")
     except Exception as exc:
-        update_task(task_id, status="FAILED", last_error=str(exc))
+        tasks.update_task(task_id, status="FAILED", last_error=str(exc))
         print(f"Task #{task_id} PTY error: {exc}")
 
 
-def run_task(task: TaskRecord, runner_mode: str, telegram_enabled: bool, telegram_verbosity: str, echo_output: bool) -> None:
+def run_task(
+    task: TaskRecord,
+    runner_mode: str,
+    telegram_enabled: bool,
+    telegram_verbosity: str,
+    echo_output: bool,
+    task_service: Optional[TaskApplicationService] = None,
+) -> None:
     """
     Dispatch a task to the selected runner implementation.
 
@@ -603,21 +653,25 @@ def run_task(task: TaskRecord, runner_mode: str, telegram_enabled: bool, telegra
             Telegram approval verbosity.
         echo_output:
             Whether PTY output is mirrored to stdout.
+        task_service:
+            Persistence boundary that owns this task lifecycle.
 
     Returns:
         None.
     """
 
+    tasks = task_service or get_task_service()
     if runner_mode == "pty":
         run_codex_pty(
             task,
             telegram_enabled=telegram_enabled,
             telegram_verbosity=telegram_verbosity,
             echo_output=echo_output,
+            task_service=tasks,
         )
         return
 
-    run_codex_subprocess(task)
+    run_codex_subprocess(task, task_service=tasks)
 
 
 def worker_loop(
@@ -650,10 +704,11 @@ def worker_loop(
         is runnable.
     """
 
-    init_db()
+    tasks = get_task_service()
+    tasks.initialize()
 
     while True:
-        task = get_next_task()
+        task = tasks.next_runnable_task()
 
         if not task:
             if stop_when_empty:
@@ -670,6 +725,7 @@ def worker_loop(
             telegram_enabled=telegram_enabled,
             telegram_verbosity=telegram_verbosity,
             echo_output=echo_output,
+            task_service=tasks,
         )
 
 

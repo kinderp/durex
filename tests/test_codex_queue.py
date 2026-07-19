@@ -119,6 +119,7 @@ class QueueLifecycleCharacterizationTests(unittest.TestCase):
         """Runner mode remains the sole dispatch decision at this boundary."""
 
         task = self.add_task()
+        task_service = codex_queue.get_task_service()
         with mock.patch.object(codex_queue, "run_codex_pty") as pty_run, mock.patch.object(
             codex_queue, "run_codex_subprocess"
         ) as subprocess_run:
@@ -128,6 +129,7 @@ class QueueLifecycleCharacterizationTests(unittest.TestCase):
                 telegram_enabled=True,
                 telegram_verbosity="verbose",
                 echo_output=False,
+                task_service=task_service,
             )
 
         pty_run.assert_called_once_with(
@@ -135,8 +137,27 @@ class QueueLifecycleCharacterizationTests(unittest.TestCase):
             telegram_enabled=True,
             telegram_verbosity="verbose",
             echo_output=False,
+            task_service=task_service,
         )
         subprocess_run.assert_not_called()
+
+    def test_subprocess_lifecycle_uses_injected_task_service(self):
+        """Runner writes must stay in the repository that supplied the task."""
+
+        task = self.add_task()
+        task_service = codex_queue.get_task_service()
+        completed = mock.Mock(returncode=0, stdout="done", stderr="")
+
+        with mock.patch.object(
+            codex_queue,
+            "get_task_service",
+            side_effect=AssertionError("global service lookup"),
+        ), mock.patch.object(codex_queue.subprocess, "run", return_value=completed):
+            codex_queue.run_codex_subprocess(task, task_service=task_service)
+
+        stored = self.load_task(task["id"])
+        self.assertEqual(stored["status"], "COMPLETED")
+        self.assertEqual(stored["output"], "done\n")
 
 
 class TelegramCheckTests(unittest.TestCase):

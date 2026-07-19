@@ -1011,6 +1011,8 @@ def run_worker_until_empty(
             Runtime control configuration.
         notify:
             Callback used to send status messages back to Telegram.
+        task_service:
+            Persistence boundary shared by task selection and execution.
 
     Returns:
         None. Worker completion or errors are reported through ``notify`` and
@@ -1039,6 +1041,7 @@ def run_worker_until_empty(
                 telegram_enabled=config.worker_telegram_approvals,
                 telegram_verbosity=config.telegram_verbosity,
                 echo_output=config.echo_output,
+                task_service=tasks,
             )
     except Exception as exc:
         with state.lock:
