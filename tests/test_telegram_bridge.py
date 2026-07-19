@@ -80,6 +80,29 @@ class TelegramBridgeDownloadTests(unittest.TestCase):
 
         self.assertFalse(self.destination().exists())
 
+    def test_poll_updates_bounds_http_timeout_from_long_poll_timeout(self):
+        """Dispatcher shutdown should not inherit the generic 30-second timeout."""
+
+        with mock.patch.object(
+            self.bridge,
+            "api_call",
+            return_value={"result": []},
+        ) as api_call:
+            updates = self.bridge.poll_updates(
+                timeout=3,
+                allowed_updates=["message", "callback_query"],
+            )
+
+        self.assertEqual(updates, [])
+        api_call.assert_called_once_with(
+            "getUpdates",
+            {
+                "timeout": 3,
+                "allowed_updates": ["message", "callback_query"],
+            },
+            request_timeout=8,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

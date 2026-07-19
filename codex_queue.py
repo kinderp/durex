@@ -45,6 +45,7 @@ from task_services import (
     TaskRecord,
 )
 from telegram_bridge import TelegramApprovalBridge, TelegramBridgeConfig, TelegramBridgeError
+from telegram_dispatcher import ApprovalDecisionProvider, StandaloneTelegramApprovalRuntime
 
 
 DB_PATH = "codex_tasks.db"
@@ -569,6 +570,7 @@ def run_codex_pty(
     telegram_verbosity: str,
     echo_output: bool,
     task_service: Optional[TaskApplicationService] = None,
+    approval_provider: Optional[ApprovalDecisionProvider] = None,
 ) -> None:
     """
     Run one task using the PTY approval bridge.
@@ -584,6 +586,9 @@ def run_codex_pty(
             Whether PTY output should be mirrored locally.
         task_service:
             Persistence boundary that owns this task lifecycle.
+        approval_provider:
+            Shared broker-backed approval provider. Control mode injects this
+            so the runner does not create a second Telegram poller.
 
     Returns:
         None. The task row is updated based on PTY result.
@@ -606,16 +611,28 @@ def run_codex_pty(
     print("Command:", " ".join(cmd))
 
     try:
-        telegram_bridge = build_telegram_bridge(enabled=telegram_enabled, verbosity=telegram_verbosity)
-        result = run_pty_command(
-            cmd=cmd,
-            cwd=task["workdir"],
-            task=task_to_dict(task),
-            policy=default_policy(),
-            telegram_bridge=telegram_bridge,
-            telegram_verbosity=telegram_verbosity,
-            config=PtyRunnerConfig(echo_output=echo_output),
-        )
+        runtime: Optional[StandaloneTelegramApprovalRuntime] = None
+        active_provider = approval_provider if telegram_enabled else None
+        if telegram_enabled and active_provider is None:
+            telegram_transport = build_telegram_bridge(enabled=True, verbosity=telegram_verbosity)
+            if telegram_transport is None:
+                raise TelegramBridgeError("Telegram approval transport was not created.")
+            runtime = StandaloneTelegramApprovalRuntime(telegram_transport)
+            active_provider = runtime.start()
+
+        try:
+            result = run_pty_command(
+                cmd=cmd,
+                cwd=task["workdir"],
+                task=task_to_dict(task),
+                policy=default_policy(),
+                approval_provider=active_provider,
+                telegram_verbosity=telegram_verbosity,
+                config=PtyRunnerConfig(echo_output=echo_output),
+            )
+        finally:
+            if runtime is not None:
+                runtime.close()
         finish_task_from_output(
             task,
             output=result.output,
@@ -637,6 +654,7 @@ def run_task(
     telegram_verbosity: str,
     echo_output: bool,
     task_service: Optional[TaskApplicationService] = None,
+    approval_provider: Optional[ApprovalDecisionProvider] = None,
 ) -> None:
     """
     Dispatch a task to the selected runner implementation.
@@ -655,6 +673,8 @@ def run_task(
             Whether PTY output is mirrored to stdout.
         task_service:
             Persistence boundary that owns this task lifecycle.
+        approval_provider:
+            Shared approval provider injected by a process-level dispatcher.
 
     Returns:
         None.
@@ -668,6 +688,7 @@ def run_task(
             telegram_verbosity=telegram_verbosity,
             echo_output=echo_output,
             task_service=tasks,
+            approval_provider=approval_provider,
         )
         return
 
@@ -887,10 +908,7 @@ def main() -> None:
     control.add_argument(
         "--worker-telegram-approvals",
         action="store_true",
-        help=(
-            "Reserved for a future shared Telegram update dispatcher. "
-            "Currently rejected in telegram-control mode."
-        ),
+        help="Route PTY worker approval buttons through the control dispatcher.",
     )
     control.add_argument(
         "--telegram-verbosity",
@@ -953,12 +971,6 @@ def main() -> None:
     if args.command == "telegram-control":
         sys.modules.setdefault("codex_queue", sys.modules[__name__])
         from telegram_control import TelegramControlBot
-
-        if args.worker_telegram_approvals:
-            parser.error(
-                "telegram-control --worker-telegram-approvals is not supported yet because it "
-                "would create competing Telegram getUpdates consumers."
-            )
 
         init_db()
         bot = TelegramControlBot.from_env(

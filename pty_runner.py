@@ -47,11 +47,11 @@ from typing import Optional, Sequence
 from approval_detector import ApprovalRequest, detect_approval_request
 from approval_policy import ApprovalPolicy, PolicyAction, PolicyDecision, default_policy
 from telegram_bridge import (
-    TelegramApprovalBridge,
     TelegramApprovalDecision,
     TelegramApprovalRequest,
     TelegramDecisionAction,
 )
+from telegram_dispatcher import ApprovalDecisionProvider
 
 
 @dataclass(frozen=True)
@@ -364,7 +364,7 @@ def handle_approval_request(
     master_fd: int,
     approval: ApprovalRequest,
     policy: ApprovalPolicy,
-    telegram_bridge: Optional[TelegramApprovalBridge],
+    approval_provider: Optional[ApprovalDecisionProvider],
     task: Optional[dict],
     telegram_verbosity: str,
     audit_events: list[ApprovalAuditEvent],
@@ -383,8 +383,8 @@ def handle_approval_request(
             Detector request that needs a decision.
         policy:
             Local policy engine.
-        telegram_bridge:
-            Optional Telegram bridge for human-in-the-loop decisions.
+        approval_provider:
+            Optional broker-backed provider for human-in-the-loop decisions.
         task:
             Optional queue metadata for Telegram message context.
         telegram_verbosity:
@@ -417,7 +417,7 @@ def handle_approval_request(
         )
         return True
 
-    if telegram_bridge is None:
+    if approval_provider is None:
         # In PTY mode without Telegram, the conservative behavior is denial.
         write_to_pty(master_fd, "n\n")
         record_audit_event(
@@ -430,8 +430,7 @@ def handle_approval_request(
         return True
 
     telegram_request = build_telegram_request(task, approval, verbosity=telegram_verbosity)
-    telegram_bridge.send_approval_request(telegram_request)
-    telegram_decision = telegram_bridge.wait_for_decision(telegram_request)
+    telegram_decision = approval_provider.request_decision(telegram_request)
 
     if telegram_decision.action == TelegramDecisionAction.STOP:
         record_audit_event(
@@ -467,7 +466,7 @@ def run_pty_command(
     cwd: Optional[str] = None,
     task: Optional[dict] = None,
     policy: Optional[ApprovalPolicy] = None,
-    telegram_bridge: Optional[TelegramApprovalBridge] = None,
+    approval_provider: Optional[ApprovalDecisionProvider] = None,
     telegram_verbosity: str = "normal",
     config: Optional[PtyRunnerConfig] = None,
 ) -> PtyRunResult:
@@ -488,9 +487,9 @@ def run_pty_command(
         policy:
             Approval policy. If None, default_policy() is used.
 
-        telegram_bridge:
-            Optional TelegramApprovalBridge. If omitted and a prompt requires
-            human approval, the runner denies conservatively.
+        approval_provider:
+            Optional broker-backed approval provider. If omitted and a prompt
+            requires human approval, the runner denies conservatively.
 
         telegram_verbosity:
             compact, normal or verbose.
@@ -540,7 +539,7 @@ def run_pty_command(
                         master_fd=master_fd,
                         approval=approval,
                         policy=policy,
-                        telegram_bridge=telegram_bridge,
+                        approval_provider=approval_provider,
                         task=task,
                         telegram_verbosity=telegram_verbosity,
                         audit_events=audit_events,
@@ -597,7 +596,7 @@ def _demo() -> None:
         cwd=os.getcwd(),
         task={"id": 0, "title": "PTY runner demo", "workdir": os.getcwd()},
         policy=default_policy(),
-        telegram_bridge=None,
+        approval_provider=None,
         config=PtyRunnerConfig(echo_output=True),
     )
 
