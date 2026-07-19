@@ -189,8 +189,12 @@ competing poller.
 
 The control daemon subscribes to both `message` and `callback_query` updates.
 Standalone approval mode subscribes only to `callback_query` because it has no
-command handler; it does not fetch and silently discard Telegram control
-messages intended for a later control-daemon session.
+command handler. This is a best-effort scope reduction, not a deferred-delivery
+guarantee: Telegram states that `allowed_updates` is not retroactive, and offset
+advancement can confirm earlier updates. Control messages sent while standalone
+mode owns the bot token are unsupported and may be lost. Use the shared control
+daemon below when commands and approvals must remain available together. See
+the official [getUpdates contract](https://core.telegram.org/bots/api#getupdates).
 
 ## Running the modes
 
@@ -216,7 +220,9 @@ python3 codex_queue.py run \
 ```
 
 Do not run standalone mode and `telegram-control` concurrently with the same bot
-token.
+token. Do not send queue-control commands while standalone mode owns that token;
+they are unsupported and may not be available to a later control-daemon
+session.
 
 ## Validation coverage
 

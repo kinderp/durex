@@ -500,6 +500,12 @@ Do not run another Durex polling process with the same bot token. In particular,
 stop `telegram-control` before using `telegram-check --discover-chat-id` or
 standalone `run --telegram` with that token.
 
+Standalone `run --telegram` is approval-only. Do not send `/status`, `/add`,
+`/run`, or other control commands while standalone mode owns the token; Telegram
+does not guarantee those filtered updates will remain available for a later
+daemon. Use `telegram-control --worker-telegram-approvals` when the phone must
+provide both queue commands and approval decisions.
+
 ## Security Boundaries
 
 Remote control currently enforces these boundaries:

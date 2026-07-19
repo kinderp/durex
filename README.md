@@ -401,6 +401,12 @@ Buttons:
 | Show context | Send more terminal output to Telegram |
 | Stop task | Stop the current task process |
 
+Standalone `run --telegram` is approval-only. Do not send queue-control commands
+to that bot while the standalone runner owns its token: those commands are
+unsupported and may be lost rather than deferred to a later control daemon. Use
+`telegram-control --worker-telegram-approvals` when commands and approval buttons
+must work together.
+
 More details: [`docs/TELEGRAM_APPROVALS.md`](docs/TELEGRAM_APPROVALS.md)
 
 ## Telegram remote control

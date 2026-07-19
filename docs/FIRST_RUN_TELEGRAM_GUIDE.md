@@ -499,6 +499,11 @@ approval buttons. Queue commands and approval callbacks then share the sole
 `getUpdates` loop. Do not run chat-id discovery or standalone `run --telegram`
 concurrently with the same bot token.
 
+Standalone `run --telegram` accepts approval buttons only. Control commands sent
+while it owns the token are unsupported and may be lost; Telegram filtering does
+not provide deferred delivery to a later daemon. Prefer the shared daemon above
+when operating from a phone.
+
 ---
 
 ## 11. Telegram Text Command Reference
