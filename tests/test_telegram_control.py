@@ -402,6 +402,26 @@ class TelegramControlTests(unittest.TestCase):
         self.assertEqual(response, "Current task cancellation requested.")
         self.assertEqual(task_service.task_detail(task_id).status, "CANCELLED")
 
+    def test_voice_stop_current_uses_supervisor_cancellation(self):
+        """Voice cancellation routes through the same owner-scoped operation."""
+
+        bot = TelegramControlBot(
+            bridge=FakeBridge(),
+            config=TelegramControlConfig(allowed_workdirs=[self.tmp.name]),
+        )
+
+        with mock.patch.object(
+            bot,
+            "stop_current_task",
+            return_value="Current task cancellation requested.",
+        ) as stop_current:
+            response = bot.handle_voice_command(
+                parse_voice_command("annulla task corrente")
+            )
+
+        stop_current.assert_called_once_with()
+        self.assertEqual(response, "Current task cancellation requested.")
+
     def test_handle_add_message_rejects_disallowed_workdir(self):
         """Remote users must not enqueue tasks outside allowed workdir roots."""
 

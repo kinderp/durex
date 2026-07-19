@@ -78,6 +78,20 @@ class VoiceCommandTests(unittest.TestCase):
 
         self.assertEqual(command.action, "stop")
 
+    def test_stop_current_italian(self):
+        """Italian immediate stop remains distinct from cooperative worker stop."""
+
+        command = parse_voice_command("ferma task corrente")
+
+        self.assertEqual(command.action, "stop_current")
+
+    def test_stop_current_english(self):
+        """English immediate stop maps to current-run cancellation."""
+
+        command = parse_voice_command("cancel current task")
+
+        self.assertEqual(command.action, "stop_current")
+
     def test_add_italian_with_alias(self):
         """Italian add commands should extract title, alias workdir and prompt."""
 

@@ -61,6 +61,10 @@ LEARN_ACTION_ALIASES = {
     "avvia": "run",
     "stop": "stop",
     "ferma": "stop",
+    "stop-current": "stop_current",
+    "stop_current": "stop_current",
+    "annulla": "stop_current",
+    "interrompi": "stop_current",
 }
 
 DEFAULT_VOICE_MAX_DURATION_SECONDS = 300
@@ -1402,6 +1406,10 @@ class TelegramControlBot:
                 ],
                 [
                     {"text": "Learn Stop", "callback_data": f"durexlearn:{token}:stop"},
+                    {
+                        "text": "Learn Stop Current",
+                        "callback_data": f"durexlearn:{token}:stop_current",
+                    },
                 ],
             ]
         }
@@ -1666,6 +1674,8 @@ class TelegramControlBot:
             return self.start_worker()
         if command.action == "stop":
             return self.stop_worker_after_current()
+        if command.action == "stop_current":
+            return self.stop_current_task()
         if command.action == "add_wizard":
             return self.start_add_wizard()
         if command.action == "add":
