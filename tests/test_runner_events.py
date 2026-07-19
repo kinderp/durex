@@ -7,7 +7,7 @@ import unittest
 
 from runner_events import PersistentRunnerEventSink, RunnerEventEmitter
 from runtime_contracts import RunnerInteractionState, RunnerLifecycle
-from task_services import SQLiteTaskRepository, TaskApplicationService
+from task_services import SQLiteTaskRepository, TaskApplicationService, TaskRepositoryError
 
 
 class PersistentRunnerEventSinkTests(unittest.TestCase):
@@ -17,15 +17,16 @@ class PersistentRunnerEventSinkTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.db_path = Path(self.tmp.name) / "tasks.db"
+        self.now = "2026-07-19T12:00:00+00:00"
         repository = SQLiteTaskRepository(
             connect=lambda: sqlite3.connect(self.db_path),
-            now=lambda: "2026-07-19T12:00:00+00:00",
+            now=lambda: self.now,
             live_output_max_chars=1_000,
             live_output_max_chunks=10,
         )
         self.tasks = TaskApplicationService(
             repository,
-            now=lambda: "2026-07-19T12:00:00+00:00",
+            now=lambda: self.now,
         )
         self.task_id = self.tasks.add_task("events", "prompt", self.tmp.name)
 
@@ -86,6 +87,43 @@ class PersistentRunnerEventSinkTests(unittest.TestCase):
         page = self.tasks.live_output(self.task_id, run_id="run-error")
         self.assertEqual(page.status, "failed")
         self.assertEqual(page.last_event_sequence, 3)
+
+    def test_stale_claim_cannot_append_output_after_reassignment(self):
+        """Live output uses the same fence as task heartbeat and finalization."""
+
+        claim = self.tasks.claim_next_task(
+            worker_id="worker-1",
+            lease_id="lease-1",
+            run_id="run-1",
+            lease_expires_at="2026-07-19T12:01:00+00:00",
+        )
+        sink = PersistentRunnerEventSink(
+            self.tasks,
+            self.task_id,
+            claim.run_id,
+            attempt=claim.task.attempts,
+            claim=claim,
+        )
+        emitter = RunnerEventEmitter(self.task_id, sink=sink, run_id=claim.run_id)
+        emitter.lifecycle(RunnerLifecycle.STARTED)
+        emitter.output("owned")
+
+        self.now = "2026-07-19T12:01:00+00:00"
+        self.tasks.recover_stale_task_claims()
+        self.tasks.update_task(self.task_id, status="PENDING")
+        current = self.tasks.claim_next_task(
+            worker_id="worker-2",
+            lease_id="lease-2",
+            run_id="run-2",
+            lease_expires_at="2026-07-19T12:02:00+00:00",
+        )
+
+        with self.assertRaisesRegex(TaskRepositoryError, "ownership was lost"):
+            emitter.output("stale")
+
+        self.assertEqual(current.lease_epoch, claim.lease_epoch + 1)
+        page = self.tasks.live_output(self.task_id, run_id="run-1")
+        self.assertEqual([chunk.text for chunk in page.chunks], ["owned"])
 
 
 if __name__ == "__main__":

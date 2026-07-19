@@ -254,9 +254,24 @@ class TaskRepository(Protocol):
 
     def latest(self) -> Optional[TaskRecord]: ...
 
-    def start_run(self, task_id: int, run_id: str, attempt: int) -> bool: ...
+    def start_run(
+        self,
+        task_id: int,
+        run_id: str,
+        attempt: int,
+        lease_id: Optional[str] = None,
+        lease_epoch: Optional[int] = None,
+    ) -> bool: ...
 
-    def append_run_output(self, task_id: int, run_id: str, sequence: int, text: str) -> bool: ...
+    def append_run_output(
+        self,
+        task_id: int,
+        run_id: str,
+        sequence: int,
+        text: str,
+        lease_id: Optional[str] = None,
+        lease_epoch: Optional[int] = None,
+    ) -> bool: ...
 
     def finish_run(
         self,
@@ -265,6 +280,8 @@ class TaskRepository(Protocol):
         sequence: int,
         status: str,
         returncode: Optional[int],
+        lease_id: Optional[str] = None,
+        lease_epoch: Optional[int] = None,
     ) -> bool: ...
 
     def read_run_output(
@@ -749,7 +766,14 @@ class SQLiteTaskRepository:
 
         return self._fetch_one("SELECT * FROM tasks ORDER BY id DESC LIMIT 1")
 
-    def start_run(self, task_id: int, run_id: str, attempt: int) -> bool:
+    def start_run(
+        self,
+        task_id: int,
+        run_id: str,
+        attempt: int,
+        lease_id: Optional[str] = None,
+        lease_epoch: Optional[int] = None,
+    ) -> bool:
         """Create one idempotent live-output run and prune old finished runs."""
 
         if not run_id:
@@ -759,12 +783,13 @@ class SQLiteTaskRepository:
         now = self._now()
         with self._connect() as con:
             con.execute("BEGIN IMMEDIATE")
-            task_exists = con.execute(
-                "SELECT 1 FROM tasks WHERE id = ?",
-                (task_id,),
-            ).fetchone()
-            if task_exists is None:
-                raise TaskRepositoryError(f"Unknown task id: {task_id}")
+            self._validate_run_owner(
+                con,
+                task_id,
+                run_id,
+                lease_id,
+                lease_epoch,
+            )
 
             existing = con.execute(
                 "SELECT task_id, attempt FROM task_runs WHERE run_id = ?",
@@ -793,6 +818,8 @@ class SQLiteTaskRepository:
         run_id: str,
         sequence: int,
         text: str,
+        lease_id: Optional[str] = None,
+        lease_epoch: Optional[int] = None,
     ) -> bool:
         """Append one ordered chunk and compact the run inside one transaction."""
 
@@ -806,6 +833,13 @@ class SQLiteTaskRepository:
         now = self._now()
         with self._connect() as con:
             con.execute("BEGIN IMMEDIATE")
+            self._validate_run_owner(
+                con,
+                task_id,
+                run_id,
+                lease_id,
+                lease_epoch,
+            )
             run = con.execute(
                 """
                 SELECT task_id, status, last_event_sequence,
@@ -873,6 +907,8 @@ class SQLiteTaskRepository:
         sequence: int,
         status: str,
         returncode: Optional[int],
+        lease_id: Optional[str] = None,
+        lease_epoch: Optional[int] = None,
     ) -> bool:
         """Finalize a run once while accepting an identical replay."""
 
@@ -883,6 +919,13 @@ class SQLiteTaskRepository:
         now = self._now()
         with self._connect() as con:
             con.execute("BEGIN IMMEDIATE")
+            self._validate_run_owner(
+                con,
+                task_id,
+                run_id,
+                lease_id,
+                lease_epoch,
+            )
             run = con.execute(
                 """
                 SELECT task_id, status, returncode, last_event_sequence
@@ -1112,6 +1155,37 @@ class SQLiteTaskRepository:
             if column not in existing:
                 con.execute(f"ALTER TABLE tasks ADD COLUMN {column} {definition}")
 
+    @staticmethod
+    def _validate_run_owner(
+        con: sqlite3.Connection,
+        task_id: int,
+        run_id: str,
+        lease_id: Optional[str],
+        lease_epoch: Optional[int],
+    ) -> None:
+        """Fence live-run writes when a supervisor claim is supplied."""
+
+        if (lease_id is None) != (lease_epoch is None):
+            raise TaskRepositoryError("lease_id and lease_epoch must be supplied together")
+        if lease_id is None:
+            exists = con.execute(
+                "SELECT 1 FROM tasks WHERE id = ?",
+                (task_id,),
+            ).fetchone()
+        else:
+            exists = con.execute(
+                """
+                SELECT 1 FROM tasks
+                WHERE id = ? AND status = 'RUNNING' AND active_run_id = ?
+                  AND lease_id = ? AND lease_epoch = ?
+                """,
+                (task_id, run_id, lease_id, lease_epoch),
+            ).fetchone()
+        if exists is None:
+            if lease_id is None:
+                raise TaskRepositoryError(f"Unknown task id: {task_id}")
+            raise TaskRepositoryError("Runner event claim ownership was lost")
+
     def _update_where(
         self,
         task_id: int,
@@ -1295,9 +1369,22 @@ class TaskApplicationService:
             return self.repository.latest()
         return self.repository.get(task_id)
 
-    def start_task_run(self, task_id: int, run_id: str, attempt: int) -> bool:
+    def start_task_run(
+        self,
+        task_id: int,
+        run_id: str,
+        attempt: int,
+        claim: Optional[TaskClaim] = None,
+    ) -> bool:
         self.initialize()
-        return self.repository.start_run(task_id, run_id, attempt)
+        lease_id, lease_epoch = self._run_fence(task_id, run_id, claim)
+        return self.repository.start_run(
+            task_id,
+            run_id,
+            attempt,
+            lease_id,
+            lease_epoch,
+        )
 
     def append_live_output(
         self,
@@ -1305,9 +1392,18 @@ class TaskApplicationService:
         run_id: str,
         sequence: int,
         text: str,
+        claim: Optional[TaskClaim] = None,
     ) -> bool:
         self.initialize()
-        return self.repository.append_run_output(task_id, run_id, sequence, text)
+        lease_id, lease_epoch = self._run_fence(task_id, run_id, claim)
+        return self.repository.append_run_output(
+            task_id,
+            run_id,
+            sequence,
+            text,
+            lease_id,
+            lease_epoch,
+        )
 
     def finish_task_run(
         self,
@@ -1316,15 +1412,31 @@ class TaskApplicationService:
         sequence: int,
         status: str,
         returncode: Optional[int],
+        claim: Optional[TaskClaim] = None,
     ) -> bool:
         self.initialize()
+        lease_id, lease_epoch = self._run_fence(task_id, run_id, claim)
         return self.repository.finish_run(
             task_id,
             run_id,
             sequence,
             status,
             returncode,
+            lease_id,
+            lease_epoch,
         )
+
+    @staticmethod
+    def _run_fence(
+        task_id: int,
+        run_id: str,
+        claim: Optional[TaskClaim],
+    ) -> tuple[Optional[str], Optional[int]]:
+        if claim is None:
+            return None, None
+        if claim.task.id != task_id or claim.run_id != run_id:
+            raise TaskRepositoryError("Task claim does not match the live run")
+        return claim.lease_id, claim.lease_epoch
 
     def live_output(
         self,
