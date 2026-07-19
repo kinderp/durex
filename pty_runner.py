@@ -68,6 +68,10 @@ class PtyRunnerConfig:
         full output is stored separately; the rolling buffer is only used for
         prompt detection.
 
+    post_exit_drain_seconds:
+        Maximum total time spent draining buffered PTY output after the direct
+        child process exits.
+
     echo_output:
         If true, chunks read from the PTY are also printed to the local stdout.
         This is useful while developing and while running Durex manually.
@@ -75,6 +79,7 @@ class PtyRunnerConfig:
 
     read_timeout_seconds: float = 0.5
     max_buffer_chars: int = 20000
+    post_exit_drain_seconds: float = 0.5
     echo_output: bool = True
 
 
@@ -509,10 +514,18 @@ def run_pty_command(
     rolling_buffer = ""
     seen_request_ids: set[str] = set()
     audit_events: list[ApprovalAuditEvent] = []
+    post_exit_deadline: Optional[float] = None
 
     try:
         while True:
-            readable, _, _ = select.select([master_fd], [], [], config.read_timeout_seconds)
+            read_timeout = config.read_timeout_seconds
+            if post_exit_deadline is not None:
+                remaining = post_exit_deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                read_timeout = min(read_timeout, remaining)
+
+            readable, _, _ = select.select([master_fd], [], [], read_timeout)
 
             if readable:
                 try:
@@ -553,8 +566,16 @@ def run_pty_command(
                         )
                     rolling_buffer = ""
 
-            if process.poll() is not None and not readable:
-                break
+            if process.poll() is not None:
+                if post_exit_deadline is None:
+                    if not readable:
+                        break
+                    post_exit_deadline = time.monotonic() + max(
+                        0.0,
+                        config.post_exit_drain_seconds,
+                    )
+                elif not readable:
+                    break
 
         returncode = int(process.wait())
         return PtyRunResult(
