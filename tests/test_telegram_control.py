@@ -1504,6 +1504,8 @@ class TelegramControlTests(unittest.TestCase):
         self.assertIn("Voice transcript: avvia worker", response)
         self.assertIn("Worker started.", response)
         self.assertEqual(transcriber.calls, ["it"])
+        bot.supervisor._thread.join(timeout=2.0)
+        self.assertFalse(bot.supervisor._thread.is_alive())
 
     def test_voice_tasks_accepts_language_detection_drift(self):
         """Task-list commands should not be blocked by wrong automatic language detection."""
