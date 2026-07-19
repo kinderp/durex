@@ -612,6 +612,8 @@ Then add one task per folder. This keeps Codex isolated and avoids mixing files 
 |---|---|
 | [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md) | Step-by-step usage guide and CLI workflows |
 | [`docs/OPERATING_RULES.md`](docs/OPERATING_RULES.md) | Rules for future sessions, commits, PRs, reviews and validation |
+| [`docs/GITHUB_WORKFLOW.md`](docs/GITHUB_WORKFLOW.md) | Milestones, parent and child issues, PR modes, review loops and finding traceability |
+| [`docs/GITHUB_TEMPLATES.md`](docs/GITHUB_TEMPLATES.md) | Copy-ready milestone, issue, PR, review and finding templates |
 | [`docs/CLI_DOC_AUTOMATION.md`](docs/CLI_DOC_AUTOMATION.md) | CLI documentation drift check and generator roadmap |
 | [`docs/SYSTEM_OVERVIEW.md`](docs/SYSTEM_OVERVIEW.md) | Whole-system map and Python file responsibilities |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | High-level architecture and data model |

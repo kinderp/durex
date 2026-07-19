@@ -5,6 +5,10 @@ This document records the working rules to follow in future Durex sessions.
 Use it before starting a new change, review, documentation pass, or pull request.
 The goal is to keep work traceable, reviewable, and consistent across sessions.
 
+The detailed GitHub lifecycle is defined in
+[GITHUB_WORKFLOW.md](GITHUB_WORKFLOW.md). Copy-ready public templates live in
+[GITHUB_TEMPLATES.md](GITHUB_TEMPLATES.md).
+
 ---
 
 ## Session start
@@ -97,6 +101,33 @@ Stay on the current branch when:
 - the task fixes findings from the current PR review;
 - the task updates the same documentation or feature scope;
 - the change is a direct follow-up to the current branch.
+
+---
+
+## GitHub planning rules
+
+Use this traceability chain for non-trivial roadmap work:
+
+```text
+Milestone -> parent issue -> child issue -> pull request -> commits
+```
+
+- A milestone represents a measurable outcome, not a loose theme.
+- Its parent issue owns the execution plan, definition of done, dependencies,
+  child-issue checklist, and implementation traceability table.
+- A coherent non-trivial micro-step gets one child issue and normally one PR.
+- The child issue links its parent. The parent links the child issue and PR.
+- Use GitHub's native sub-issue relationship when available, in addition to
+  explicit links in issue bodies.
+- The PR body uses `Closes #CHILD` and links the parent issue and milestone.
+- The parent checklist and implementation traceability table must agree.
+- Stable decisions belong in repository documentation. GitHub Discussions may
+  preserve alternatives and unresolved reasoning, but are not contracts.
+
+Use at least one `area:*` and one `kind:*` label on non-trivial issues. Add
+`priority:*` and `status:*` only when they communicate useful information.
+See [GITHUB_WORKFLOW.md](GITHUB_WORKFLOW.md) for the Durex label taxonomy and
+milestone lifecycle.
 
 ---
 
@@ -214,6 +245,10 @@ git log -1 --stat --format=fuller
 
 Open or update a PR only after the relevant branch has been pushed.
 
+Open non-trivial PRs as drafts. Keep a PR in draft until two consecutive review
+rounds produce no new findings. Any fix or material change resets the clean
+review count because the resulting diff has not yet received two clean passes.
+
 PR descriptions should include:
 
 - a concise summary;
@@ -223,9 +258,39 @@ PR descriptions should include:
 - commit list when useful;
 - validation performed;
 - whether the change is documentation-only, code-only, or mixed.
+- linked child issue, parent issue, and milestone when applicable;
+- scope and explicit non-goals;
+- affected contracts and residual risks;
+- review-round history.
 
-When updating a PR after new commits, add an explicit update section instead of
-silently replacing context.
+Update the PR description after every significant review round. Use
+`Review round N`, never `Review update #N`, because GitHub interprets `#N` as an
+issue or PR reference.
+
+### Operating modes
+
+The default mode is supervised when the maintainer does not choose one.
+
+Supervised mode:
+
+- trigger: `supervised mode` or `modalita supervisionata`;
+- short alias: `/dpcr super`;
+- explain significant actions before performing them;
+- request confirmation before push, PR creation, finding fixes, or decisions
+  that change product scope, contracts, architecture, or material docs.
+
+Autonomous PR-loop mode:
+
+- trigger: `autonomous PR loop` or `modalita autonoma PR loop`;
+- short alias: `/dpcr auto`;
+- perform regulated mechanical work without intermediate confirmation,
+  including branch, issue, commit, push, PR updates, labels, review comments,
+  finding fixes, replies, and PR-body updates;
+- repeat review, fix, validation, and documentation updates until two
+  consecutive reviews produce no new findings;
+- stop before merge and ask the maintainer;
+- stop earlier for product choices, unclear contract changes, non-trivial CI
+  failures, permission limits, or work outside the agreed milestone.
 
 ---
 
@@ -262,6 +327,47 @@ For code PRs, review:
 
 If there are no findings, say that clearly and mention residual risk or test
 gaps.
+
+### Finding lifecycle
+
+Actionable findings belong in inline PR comments whenever a precise diff line
+exists. Keep one technical problem per comment and include risk, current
+behavior, why it matters, expected fix, and required regression coverage.
+
+Resolve findings through this auditable chain:
+
+```text
+inline finding -> single-scope fix commit -> push -> inline reply -> resolution
+```
+
+Prefer one commit per finding. The fix commit body must link both the PR and the
+finding. The inline reply must be in English and include a clickable commit
+link, the original risk, the applied solution, and the regression test or
+contract that prevents recurrence. Do not reply with only `fixed`.
+
+After each round, update the PR body with new findings, fixes, validation, clean
+review count, and draft state. Do not resolve a thread before its fix is pushed
+and the reply is present.
+
+An accurate Durex review covers, as applicable:
+
+- functional correctness and explicit public contracts;
+- queue state transitions, idempotency, and duplicate processing;
+- session identity, approval deduplication, and replay behavior;
+- PTY process ownership, cleanup, cancellation, and bounded output;
+- SQLite transactions, concurrency, migration, and data integrity;
+- Telegram authorization, long-poll ownership, callback freshness, and API
+  failure handling;
+- local voice privacy, temporary-file cleanup, language behavior, and resource
+  bounds;
+- configuration precedence, secret handling, and safe defaults;
+- tests for accepted, rejected, boundary, recovery, and regression scenarios;
+- security, dependency hygiene, portability, observability, usability, and
+  documentation consistency;
+- traceability among milestone, issues, PR, commits, findings, and docs.
+
+Use the exact review and finding formats from
+[GITHUB_TEMPLATES.md](GITHUB_TEMPLATES.md).
 
 ---
 
