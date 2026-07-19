@@ -463,6 +463,19 @@ def validate_remote_integer(
     return value
 
 
+def parse_optional_remote_integer(parts: list[str], name: str) -> Optional[int]:
+    """Parse exactly one optional Telegram command integer argument."""
+
+    if len(parts) == 1:
+        return None
+    if len(parts) != 2:
+        raise TelegramControlError(f"{name} accepts at most one integer argument.")
+    try:
+        return int(parts[1])
+    except ValueError as exc:
+        raise TelegramControlError(f"{name} must be an integer.") from exc
+
+
 def parse_workdir_aliases(value: Optional[str]) -> dict[str, str]:
     """
     Parse voice workdir aliases from an environment value.
@@ -1627,11 +1640,13 @@ class TelegramControlBot:
             return format_status(self.worker_state.is_running(), self.worker_state.last_error)
 
         if command == "/tasks":
-            limit = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else DEFAULT_TASK_LIMIT
+            limit = parse_optional_remote_integer(parts, "Task limit")
+            if limit is None:
+                limit = DEFAULT_TASK_LIMIT
             return self.prepare_tasks_view(limit=limit)
 
         if command == "/tail":
-            task_id = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else None
+            task_id = parse_optional_remote_integer(parts, "Task id")
             if task_id is not None:
                 task_id = validate_remote_integer(task_id, "Task id", 1)
             return tail_task_output(task_id=task_id)

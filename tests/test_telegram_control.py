@@ -342,6 +342,48 @@ class TelegramControlTests(unittest.TestCase):
 
         self.assertIn("Command rejected: Task id must be between 1", response)
 
+    def test_tasks_rejects_malformed_optional_limit(self):
+        """Task lists should reject negative, non-numeric, and extra arguments."""
+
+        bridge = FakeBridge(chat_id=123)
+        bot = TelegramControlBot(
+            bridge=bridge,
+            config=TelegramControlConfig(allowed_workdirs=[self.tmp.name]),
+        )
+
+        for command in ("/tasks -1", "/tasks invalid", "/tasks 1 extra"):
+            with self.subTest(command=command):
+                response = bot.handle_update(
+                    {"message": {"chat": {"id": 123}, "text": command}}
+                )
+                self.assertTrue(response.startswith("Command rejected:"))
+
+        self.assertEqual(
+            bot.handle_update({"message": {"chat": {"id": 123}, "text": "/tasks"}}),
+            "No tasks found.",
+        )
+
+    def test_tail_rejects_malformed_optional_task_id(self):
+        """Output lookup should reject negative, non-numeric, and extra arguments."""
+
+        bridge = FakeBridge(chat_id=123)
+        bot = TelegramControlBot(
+            bridge=bridge,
+            config=TelegramControlConfig(allowed_workdirs=[self.tmp.name]),
+        )
+
+        for command in ("/tail -1", "/tail invalid", "/tail 1 extra"):
+            with self.subTest(command=command):
+                response = bot.handle_update(
+                    {"message": {"chat": {"id": 123}, "text": command}}
+                )
+                self.assertTrue(response.startswith("Command rejected:"))
+
+        self.assertEqual(
+            bot.handle_update({"message": {"chat": {"id": 123}, "text": "/tail"}}),
+            "Task not found.",
+        )
+
     def test_ignores_unauthorized_chat(self):
         """Messages from other chats must be ignored without a response."""
 

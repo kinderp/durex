@@ -139,6 +139,9 @@ maximum-attempt values sent through Telegram are validated before they reach
 SQLite; invalid values are returned as command rejections without stopping the
 control daemon.
 
+`/tasks` and `/tail` accept zero or one numeric argument. The argument is never
+silently ignored: negative values, text, or additional tokens are rejected.
+
 ### Status
 
 Italian:
