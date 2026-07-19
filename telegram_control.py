@@ -23,6 +23,7 @@ import time
 from typing import Callable, Optional
 
 import codex_queue
+from runtime_contracts import TelegramTransport
 from task_services import TaskApplicationService, TaskRecord
 from telegram_bridge import (
     DEFAULT_TELEGRAM_FILE_MAX_BYTES,
@@ -1056,7 +1057,7 @@ class TelegramControlBot:
 
     def __init__(
         self,
-        bridge: TelegramApprovalBridge,
+        bridge: TelegramTransport,
         config: TelegramControlConfig,
         voice_transcriber: Optional[VoiceTranscriber] = None,
         clock: Callable[[], float] = time.monotonic,
