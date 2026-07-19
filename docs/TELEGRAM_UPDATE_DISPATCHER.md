@@ -173,12 +173,12 @@ Transient Bot API polling errors use bounded exponential backoff. In
 successful poll resets the delay.
 
 The transport normalizes URL, socket, and HTTP protocol read failures, then
-validates JSON, the top-level Bot API object, and every entry in the `getUpdates`
-result before advancing its local offset. Update identifiers must be non-boolean
-integers and strictly increase from the previous offset through the complete
-batch. Malformed or truncated responses become `TelegramBridgeError`, so the
-dispatcher uses the same bounded retry path without partially acknowledging the
-batch.
+validates JSON, requires the top-level Bot API `ok` field to be the boolean
+`true`, and validates every entry in the `getUpdates` result before advancing its
+local offset. Update identifiers must be non-boolean integers and strictly
+increase from the previous offset through the complete batch. Malformed or
+truncated responses become `TelegramBridgeError`, so the dispatcher uses the
+same bounded retry path without partially acknowledging the batch.
 
 Outbound `sendMessage` responses must contain a result object with a non-boolean
 integer message id. Invalid success-response shapes also become

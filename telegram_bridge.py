@@ -384,7 +384,7 @@ class TelegramApprovalBridge:
             raise TelegramBridgeError(
                 f"Telegram API returned a non-object response: {type(data).__name__}"
             )
-        if not data.get("ok"):
+        if data.get("ok") is not True:
             raise TelegramBridgeError(f"Telegram API returned an error: {data}")
 
         return data

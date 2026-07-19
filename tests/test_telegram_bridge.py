@@ -104,10 +104,15 @@ class TelegramBridgeDownloadTests(unittest.TestCase):
             request_timeout=8,
         )
 
-    def test_api_call_normalizes_malformed_json_and_top_level_shape(self):
-        """Malformed HTTP bodies must remain retryable bridge failures."""
+    def test_api_call_validates_json_and_top_level_envelope(self):
+        """Malformed bodies and non-boolean success flags must be bridge failures."""
 
-        for payload in (b"not-json", b"[]"):
+        for payload in (
+            b"not-json",
+            b"[]",
+            b'{"ok": "false", "result": []}',
+            b'{"ok": 1, "result": []}',
+        ):
             with self.subTest(payload=payload), mock.patch(
                 "telegram_bridge.request.urlopen",
                 return_value=StubResponse(payload),
