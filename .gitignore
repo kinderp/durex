@@ -3,4 +3,8 @@ tests/__pycache__/
 docs/_build/
 .venv/
 .DS_Store
-.durex_voice_aliases.json
+/codex_tasks.db
+/codex_tasks.db-journal
+/codex_tasks.db-shm
+/codex_tasks.db-wal
+/.durex_voice_aliases.json
