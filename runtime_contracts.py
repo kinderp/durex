@@ -5,7 +5,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from pathlib import Path
 from typing import Any, Callable, Optional, Protocol, Union
 
 from task_services import TaskRecord
@@ -112,7 +111,7 @@ class TelegramTransport(Protocol):
     def send_message(self, text: str, reply_markup: Optional[dict] = None) -> int:
         """Send one message and return its Telegram identifier."""
 
-    def answer_callback_query(self, callback_query_id: str, text: Optional[str] = None) -> None:
+    def answer_callback_query(self, callback_query_id: str, text: str = "") -> None:
         """Acknowledge one callback query."""
 
     def get_file(self, file_id: str) -> dict[str, Any]:
@@ -121,7 +120,7 @@ class TelegramTransport(Protocol):
     def download_file(
         self,
         file_path: str,
-        destination: str | Path,
-        max_bytes: Optional[int] = None,
+        destination: str,
+        max_bytes: int,
     ) -> str:
         """Download a Telegram file to a bounded local destination."""
