@@ -129,6 +129,11 @@ instead of trying to dictate:
 
 ## Supported Voice Commands
 
+Task-list requests accept between 1 and 50 rows. Task ids, priorities, and
+maximum-attempt values sent through Telegram are validated before they reach
+SQLite; invalid values are returned as command rejections without stopping the
+control daemon.
+
 ### Status
 
 Italian:

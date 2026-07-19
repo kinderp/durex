@@ -55,6 +55,9 @@ LEARN_ACTION_ALIASES = {
 }
 
 DEFAULT_VOICE_MAX_DURATION_SECONDS = 300
+MAX_TELEGRAM_TASK_LIMIT = 50
+SQLITE_INTEGER_MIN = -(2**63)
+SQLITE_INTEGER_MAX = 2**63 - 1
 
 
 @dataclass(frozen=True)
@@ -432,6 +435,19 @@ def parse_positive_int_setting(value: object, default: int, setting: str) -> int
     if parsed <= 0:
         raise TelegramControlError(f"{setting} must be a positive integer.")
     return parsed
+
+
+def validate_remote_integer(
+    value: int,
+    name: str,
+    minimum: int = SQLITE_INTEGER_MIN,
+    maximum: int = SQLITE_INTEGER_MAX,
+) -> int:
+    """Keep Telegram-provided integers within an operation's safe range."""
+
+    if value < minimum or value > maximum:
+        raise TelegramControlError(f"{name} must be between {minimum} and {maximum}.")
+    return value
 
 
 def parse_workdir_aliases(value: Optional[str]) -> dict[str, str]:
@@ -1224,6 +1240,7 @@ class TelegramControlBot:
             Message text. The keyboard is stored for the next reply.
         """
 
+        limit = validate_remote_integer(limit, "Task limit", 1, MAX_TELEGRAM_TASK_LIMIT)
         rows = recent_task_rows(limit)
         text = format_recent_tasks_view(rows)
         self.next_reply_markup = build_tasks_keyboard(rows)
@@ -1406,6 +1423,8 @@ class TelegramControlBot:
             Confirmation text.
         """
 
+        priority = validate_remote_integer(priority, "Priority")
+        max_attempts = validate_remote_integer(max_attempts, "Max attempts", 1)
         resolved = str(Path(workdir).expanduser().resolve())
         if not path_is_allowed(resolved, self.config.allowed_workdirs):
             allowed = "\n".join(self.config.allowed_workdirs)
@@ -1488,6 +1507,8 @@ class TelegramControlBot:
 
         if command == "/tail":
             task_id = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else None
+            if task_id is not None:
+                task_id = validate_remote_integer(task_id, "Task id", 1)
             return tail_task_output(task_id=task_id)
 
         if command == "/add":
@@ -1932,7 +1953,7 @@ class TelegramControlBot:
                 response = self.handle_learn_callback(callback)
                 if response is None:
                     response = self.handle_interactive_callback(callback)
-            except (TelegramControlError, ValueError, sqlite3.Error) as exc:
+            except (TelegramControlError, OverflowError, ValueError, sqlite3.Error) as exc:
                 response = f"Command rejected: {exc}"
             if response:
                 reply_markup = self.next_reply_markup
@@ -1979,6 +2000,7 @@ class TelegramControlBot:
             TelegramControlError,
             VoiceCommandError,
             VoiceTranscriptionError,
+            OverflowError,
             ValueError,
             sqlite3.Error,
         ) as exc:

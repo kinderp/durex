@@ -246,6 +246,86 @@ class TelegramControlTests(unittest.TestCase):
 
         self.assertTrue(response.startswith("Command rejected: Workdir is not allowed"))
 
+    def test_remote_add_rejects_oversized_priority(self):
+        """SQLite-sized validation should reject oversized Telegram priority values."""
+
+        bridge = FakeBridge(chat_id=123)
+        bot = TelegramControlBot(
+            bridge=bridge,
+            config=TelegramControlConfig(allowed_workdirs=[self.tmp.name]),
+        )
+        huge = "9" * 100
+
+        response = bot.handle_update(
+            {
+                "message": {
+                    "chat": {"id": 123},
+                    "text": f"/add --workdir {self.tmp.name} --priority {huge} --prompt test",
+                }
+            }
+        )
+
+        self.assertIn("Command rejected: Priority must be between", response)
+
+    def test_remote_add_rejects_oversized_max_attempts(self):
+        """SQLite-sized validation should reject oversized retry counts."""
+
+        bridge = FakeBridge(chat_id=123)
+        bot = TelegramControlBot(
+            bridge=bridge,
+            config=TelegramControlConfig(allowed_workdirs=[self.tmp.name]),
+        )
+        huge = "9" * 100
+
+        response = bot.handle_update(
+            {
+                "message": {
+                    "chat": {"id": 123},
+                    "text": f"/add --workdir {self.tmp.name} --max-attempts {huge} --prompt test",
+                }
+            }
+        )
+
+        self.assertIn("Command rejected: Max attempts must be between 1", response)
+
+    def test_remote_tasks_limit_is_bounded(self):
+        """Task lists should reject oversized values and accept the documented maximum."""
+
+        bridge = FakeBridge(chat_id=123)
+        bot = TelegramControlBot(
+            bridge=bridge,
+            config=TelegramControlConfig(allowed_workdirs=[self.tmp.name]),
+        )
+
+        accepted = bot.handle_update(
+            {"message": {"chat": {"id": 123}, "text": "/tasks 50"}}
+        )
+        rejected = bot.handle_update(
+            {"message": {"chat": {"id": 123}, "text": "/tasks 51"}}
+        )
+        huge = bot.handle_update(
+            {"message": {"chat": {"id": 123}, "text": f"/tasks {'9' * 100}"}}
+        )
+
+        self.assertEqual(accepted, "No tasks found.")
+        self.assertIn("Task limit must be between 1 and 50", rejected)
+        self.assertIn("Task limit must be between 1 and 50", huge)
+
+    def test_remote_tail_rejects_oversized_task_id(self):
+        """Task output lookup should reject ids outside SQLite's integer range."""
+
+        bridge = FakeBridge(chat_id=123)
+        bot = TelegramControlBot(
+            bridge=bridge,
+            config=TelegramControlConfig(allowed_workdirs=[self.tmp.name]),
+        )
+
+        response = bot.handle_update(
+            {"message": {"chat": {"id": 123}, "text": f"/tail {'9' * 100}"}}
+        )
+
+        self.assertIn("Command rejected: Task id must be between 1", response)
+
     def test_ignores_unauthorized_chat(self):
         """Messages from other chats must be ignored without a response."""
 
