@@ -53,3 +53,19 @@ telegram_control
    :members:
    :undoc-members:
    :show-inheritance:
+
+voice_commands
+--------------
+
+.. automodule:: voice_commands
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+voice_transcriber
+-----------------
+
+.. automodule:: voice_transcriber
+   :members:
+   :undoc-members:
+   :show-inheritance:

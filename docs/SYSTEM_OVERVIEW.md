@@ -34,6 +34,8 @@ flowchart TD
     User[User or Telegram operator]
     CLI[codex_queue.py]
     Control[telegram_control.py]
+    VoiceParser[voice_commands.py]
+    VoiceSTT[voice_transcriber.py]
     DB[(SQLite task queue)]
     Worker[Worker loop]
     Runner{Runner mode}
@@ -46,7 +48,10 @@ flowchart TD
     Phone[Telegram chat]
 
     User -->|CLI command| CLI
-    User -->|Telegram command| Control
+    User -->|Telegram text command| Control
+    User -->|Telegram voice message| VoiceSTT
+    VoiceSTT -->|local transcript| VoiceParser
+    VoiceParser -->|structured command| Control
     CLI -->|add/list/run/check| DB
     Control -->|authorized queue command| DB
     CLI -->|start worker| Worker
@@ -82,6 +87,12 @@ line subcommands.
 `telegram_control.py` is the Telegram command router. It lets the authorized
 Telegram chat inspect and operate the queue without accepting arbitrary shell
 input.
+
+`voice_transcriber.py` is the optional local speech-to-text layer used by
+Telegram voice commands.
+
+`voice_commands.py` turns Italian or English transcripts into structured queue
+commands.
 
 `SQLite task queue` is the durable system state. It stores tasks, priority,
 attempts, status, output, last error, session id, and usage-limit reset time.
@@ -119,6 +130,9 @@ remote-control commands.
 
 `User -> telegram_control.py` is triggered by Telegram text commands such as
 `/status`, `/tasks`, `/add`, `/run`, `/tail`, or `/stop`.
+
+`User -> voice_transcriber.py -> voice_commands.py -> telegram_control.py` is
+triggered by Telegram voice messages when `DUREX_VOICE_ENABLED=1`.
 
 `codex_queue.py -> SQLite task queue` is triggered when local CLI commands add,
 list, update, or read tasks.
@@ -310,6 +324,7 @@ It is responsible for:
 - long-polling Telegram message updates;
 - accepting commands only from `DUREX_TELEGRAM_CHAT_ID`;
 - parsing `/add` arguments safely;
+- optionally downloading and dispatching authorized voice messages;
 - enforcing allowed working-directory roots;
 - responding to `/status`, `/tasks`, `/add`, `/run`, `/tail`, and `/stop`;
 - starting a background worker thread;
@@ -324,6 +339,41 @@ Details:
 - Remote-control architecture: [TELEGRAM_REMOTE_CONTROL.md - Remote-control architecture](TELEGRAM_REMOTE_CONTROL.md#remote-control-architecture)
 - Command lifecycle: [TELEGRAM_REMOTE_CONTROL.md - Command lifecycle](TELEGRAM_REMOTE_CONTROL.md#command-lifecycle)
 - Worker lifecycle: [TELEGRAM_REMOTE_CONTROL.md - Worker lifecycle](TELEGRAM_REMOTE_CONTROL.md#worker-lifecycle)
+
+### `voice_commands.py`
+
+`voice_commands.py` is the deterministic voice transcript parser.
+
+It is responsible for:
+
+- recognizing supported Italian and English command phrases;
+- extracting task title, prompt, priority, workdir, task id, and limit values;
+- resolving configured spoken workdir aliases;
+- returning structured `VoiceCommand` objects instead of shell text.
+
+Read this file when you want to understand which spoken commands Durex accepts.
+
+Details:
+
+- Voice command guide: [TELEGRAM_VOICE_COMMANDS.md](TELEGRAM_VOICE_COMMANDS.md)
+
+### `voice_transcriber.py`
+
+`voice_transcriber.py` is the optional local transcription boundary.
+
+It is responsible for:
+
+- defining the provider-neutral voice transcription protocol;
+- loading `faster-whisper` lazily only when voice support is enabled;
+- returning transcript text and detected language;
+- providing a static test transcriber for unit tests.
+
+Read this file when you want to understand the privacy boundary for voice
+commands.
+
+Details:
+
+- Privacy model: [TELEGRAM_VOICE_COMMANDS.md - Privacy Model](TELEGRAM_VOICE_COMMANDS.md#privacy-model)
 
 ---
 
@@ -345,7 +395,12 @@ policy behavior, and policy loading.
 
 `tests/test_telegram_control.py` covers Telegram remote-control routing,
 authorized chat filtering, `/add` parsing, allowed workdir enforcement, worker
-approval rejection, and polling retry behavior.
+approval rejection, polling retry behavior, and voice-message routing.
+
+`tests/test_voice_commands.py` covers Italian and English transcript parsing.
+
+`tests/test_voice_transcriber.py` covers transcription provider construction,
+lazy dependency loading, and the static test transcriber.
 
 Details:
 
@@ -504,13 +559,16 @@ The flow:
 1. `telegram_control.py` starts a long-polling daemon;
 2. messages are ignored unless they come from the allowed chat id;
 3. supported text commands are routed to queue or worker operations;
-4. `/run` starts a background worker thread if one is not already running;
-5. `/stop` requests a graceful stop before the next task;
-6. responses are sent back through `telegram_bridge.py`.
+4. authorized voice messages are downloaded, transcribed locally, and parsed
+   into the same supported operations when voice support is enabled;
+5. `/run` starts a background worker thread if one is not already running;
+6. `/stop` requests a graceful stop before the next task;
+7. responses are sent back through `telegram_bridge.py`.
 
 Details:
 
 - Remote control: [TELEGRAM_REMOTE_CONTROL.md](TELEGRAM_REMOTE_CONTROL.md)
+- Voice commands: [TELEGRAM_VOICE_COMMANDS.md](TELEGRAM_VOICE_COMMANDS.md)
 - Security boundaries: [TELEGRAM_REMOTE_CONTROL.md - Security Boundaries](TELEGRAM_REMOTE_CONTROL.md#security-boundaries)
 
 ### 9. Usage-limit handling and resume

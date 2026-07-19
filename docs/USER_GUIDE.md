@@ -4,6 +4,10 @@ This guide explains how to use Durex from the command line.
 
 It is written for someone who wants to run real work, not only understand the
 architecture. For system internals, start from [SYSTEM_OVERVIEW.md](SYSTEM_OVERVIEW.md).
+For a complete first setup path covering Telegram bot creation, chat-id
+discovery, YAML configuration, text commands, voice commands, and first mobile
+smoke tests, start from
+[FIRST_RUN_TELEGRAM_GUIDE.md](FIRST_RUN_TELEGRAM_GUIDE.md).
 
 ---
 
@@ -529,6 +533,72 @@ worker to stop before starting another task.
 
 Details: [TELEGRAM_REMOTE_CONTROL.md](TELEGRAM_REMOTE_CONTROL.md)
 
+### Voice commands
+
+Telegram remote control can also accept voice messages when local transcription
+is enabled. Voice commands support Italian and English transcripts and use the
+same safe queue operations as text commands.
+
+Install the optional local speech-to-text dependency:
+
+```bash
+python3 -m venv .venv
+. .venv/bin/activate
+pip install -r requirements-voice.txt
+```
+
+Enable voice commands:
+
+```bash
+export DUREX_VOICE_ENABLED=1
+export DUREX_VOICE_MODEL=base
+export DUREX_VOICE_ALLOWED_LANGUAGES=it,en
+export DUREX_VOICE_WORKDIR_ALIASES="durex=/lab/durex"
+export DUREX_VOICE_DEBUG=1
+
+python3 codex_queue.py telegram-control --allowed-workdir /lab/durex
+```
+
+Example Italian voice command:
+
+```text
+aggiungi task titolo smoke test cartella durex priorita uno prompt leggi il readme
+```
+
+For day-to-day mobile use, prefer the guided wizard:
+
+```text
+aggiungi task
+```
+
+or:
+
+```text
+/add-wizard
+```
+
+The wizard uses buttons for workdir, priority presets, priority stepper controls,
+and final confirmation.
+
+Example English voice command:
+
+```text
+add task title smoke test directory durex priority one prompt read the readme
+```
+
+Details: [TELEGRAM_VOICE_COMMANDS.md](TELEGRAM_VOICE_COMMANDS.md)
+
+If a short command is misheard, Durex shows Learn buttons for the transcript
+candidate. Tap the action button, or use `/learn` from Telegram to map it
+manually:
+
+```text
+/learn run abbia walker
+```
+
+`/tasks` and `lista task` return task buttons. Tap a task to open details and
+then use `Tail Output`, `Run`, or `Stop`.
+
 ### First remote-control smoke test
 
 Use this after `telegram-check --send-test` works.
@@ -909,5 +979,6 @@ Recommended practices:
 - Runner design: [PTY_VS_EVENTS.md](PTY_VS_EVENTS.md)
 - Telegram approvals: [TELEGRAM_APPROVALS.md](TELEGRAM_APPROVALS.md)
 - Telegram remote control: [TELEGRAM_REMOTE_CONTROL.md](TELEGRAM_REMOTE_CONTROL.md)
+- Telegram voice commands: [TELEGRAM_VOICE_COMMANDS.md](TELEGRAM_VOICE_COMMANDS.md)
 - CLI documentation automation: [CLI_DOC_AUTOMATION.md](CLI_DOC_AUTOMATION.md)
 - Operating rules: [OPERATING_RULES.md](OPERATING_RULES.md)

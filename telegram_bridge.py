@@ -39,9 +39,14 @@ from dataclasses import dataclass, field
 from enum import Enum
 import json
 import os
+from pathlib import Path
 import time
 from typing import Any, Optional
 from urllib import parse, request, error
+
+
+DEFAULT_TELEGRAM_FILE_MAX_BYTES = 10 * 1024 * 1024
+TELEGRAM_FILE_CHUNK_BYTES = 64 * 1024
 
 
 class TelegramDecisionAction(str, Enum):
@@ -315,6 +320,20 @@ class TelegramApprovalBridge:
 
         return f"{self.config.api_base}/bot{self.config.bot_token}/{method}"
 
+    def file_url(self, file_path: str) -> str:
+        """
+        Return the full Telegram file download URL.
+
+        Args:
+            file_path:
+                Telegram file path returned by ``getFile``.
+
+        Returns:
+            URL used to download file bytes for this bot token.
+        """
+
+        return f"{self.config.api_base}/file/bot{self.config.bot_token}/{file_path}"
+
     def api_call(self, method: str, payload: dict[str, Any]) -> dict[str, Any]:
         """
         Call one Telegram Bot API method using JSON POST.
@@ -370,6 +389,80 @@ class TelegramApprovalBridge:
         if not isinstance(result, dict):
             raise TelegramBridgeError(f"Telegram getMe returned an invalid response: {data}")
         return result
+
+    def get_file(self, file_id: str) -> dict[str, Any]:
+        """
+        Return Telegram file metadata for a file id.
+
+        Args:
+            file_id:
+                Telegram file identifier from a message attachment.
+
+        Returns:
+            Telegram file metadata dictionary containing ``file_path``.
+        """
+
+        data = self.api_call("getFile", {"file_id": file_id})
+        result = data.get("result")
+        if not isinstance(result, dict):
+            raise TelegramBridgeError(f"Telegram getFile returned an invalid response: {data}")
+        return result
+
+    def download_file(
+        self,
+        file_path: str,
+        destination: str,
+        max_bytes: int = DEFAULT_TELEGRAM_FILE_MAX_BYTES,
+    ) -> str:
+        """
+        Download one Telegram file to a local path.
+
+        Args:
+            file_path:
+                Telegram file path returned by ``getFile``.
+            destination:
+                Local destination path.
+            max_bytes:
+                Maximum accepted response size.
+
+        Returns:
+            Destination path.
+        """
+
+        if max_bytes <= 0:
+            raise TelegramBridgeError("Telegram file byte limit must be positive.")
+
+        try:
+            target = Path(destination)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with request.urlopen(self.file_url(file_path), timeout=60) as response:
+                downloaded = 0
+                with target.open("wb") as output_file:
+                    while True:
+                        remaining = max_bytes - downloaded
+                        chunk = response.read(min(TELEGRAM_FILE_CHUNK_BYTES, remaining + 1))
+                        if not chunk:
+                            break
+                        downloaded += len(chunk)
+                        if downloaded > max_bytes:
+                            raise TelegramBridgeError(
+                                f"Telegram file exceeds the configured {max_bytes}-byte limit."
+                            )
+                        output_file.write(chunk)
+        except TelegramBridgeError:
+            try:
+                Path(destination).unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise
+        except (error.URLError, OSError) as exc:
+            try:
+                Path(destination).unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise TelegramBridgeError(f"Telegram file download failed: {exc}") from exc
+
+        return str(Path(destination))
 
     def build_message_text(self, approval: TelegramApprovalRequest) -> str:
         """

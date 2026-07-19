@@ -95,6 +95,26 @@ telegram:
   approval_timeout_seconds: 900
   timeout_default_decision: deny
 
+telegram_control:
+  allowed_workdirs:
+    - /lab/durex
+  workdir_choices:
+    durex: /lab/durex
+  interactive_state_ttl_seconds: 900
+  interactive_state_max_entries: 100
+  voice:
+    enabled: true
+    provider: faster_whisper
+    model: base
+    language: auto
+    allowed_languages: [it, en]
+    aliases_file: .durex_voice_aliases.json
+    debug: false
+    max_file_bytes: 10485760
+    max_duration_seconds: 300
+    workdir_aliases:
+      durex: /lab/durex
+
 policy:
   default_decision: ask
 
@@ -322,6 +342,86 @@ Allowed values:
 ask
 approve
 deny
+```
+
+---
+
+## Telegram control section
+
+`telegram-control` can read optional settings from `config.yaml`. Environment
+variables and CLI flags still override file values.
+
+```yaml
+telegram_control:
+  allowed_workdirs:
+    - /lab/durex
+  workdir_choices:
+    durex: /lab/durex
+  interactive_state_ttl_seconds: 900
+  interactive_state_max_entries: 100
+  voice:
+    enabled: true
+    provider: faster_whisper
+    model: base
+    language: auto
+    allowed_languages: [it, en]
+    aliases_file: .durex_voice_aliases.json
+    debug: false
+    max_file_bytes: 10485760
+    max_duration_seconds: 300
+    workdir_aliases:
+      durex: /lab/durex
+```
+
+### allowed_workdirs
+
+Roots accepted for Telegram-created tasks. Equivalent environment override:
+
+```bash
+export DUREX_TELEGRAM_ALLOWED_WORKDIRS="/lab/durex:/path/project"
+```
+
+### workdir_choices
+
+Named paths shown as select-like buttons in the add-task wizard.
+
+```yaml
+workdir_choices:
+  durex: /lab/durex
+  project: /path/project
+```
+
+Equivalent environment override:
+
+```bash
+export DUREX_TELEGRAM_WORKDIR_CHOICES="durex=/lab/durex,project=/path/project"
+```
+
+### interactive_state_ttl_seconds and interactive_state_max_entries
+
+Daemon-local Learn candidates and add-task wizards expire after 900 seconds and
+retain at most 100 entries per state collection by default. Equivalent
+environment overrides:
+
+```bash
+export DUREX_TELEGRAM_INTERACTIVE_STATE_TTL_SECONDS=900
+export DUREX_TELEGRAM_INTERACTIVE_STATE_MAX_ENTRIES=100
+```
+
+### voice
+
+Voice settings used by Telegram remote control. Environment overrides:
+
+```bash
+export DUREX_VOICE_ENABLED=1
+export DUREX_VOICE_MODEL=base
+export DUREX_VOICE_LANGUAGE=auto
+export DUREX_VOICE_ALLOWED_LANGUAGES=it,en
+export DUREX_VOICE_WORKDIR_ALIASES="durex=/lab/durex"
+export DUREX_VOICE_ALIASES_FILE=.durex_voice_aliases.json
+export DUREX_VOICE_DEBUG=1
+export DUREX_VOICE_MAX_FILE_BYTES=10485760
+export DUREX_VOICE_MAX_DURATION_SECONDS=300
 ```
 
 Recommended value:

@@ -70,6 +70,8 @@ The generated runtime reference includes the application modules:
 - `pty_runner`
 - `telegram_bridge`
 - `telegram_control`
+- `voice_commands`
+- `voice_transcriber`
 
 `scripts.check_cli_docs` is included in a separate maintenance section because
 it is a repository validation tool, not part of the runtime API.
