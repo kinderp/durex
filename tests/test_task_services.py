@@ -117,12 +117,15 @@ class TaskApplicationServiceTests(unittest.TestCase):
         task = self.service.task_detail(task_id)
 
         self.assertEqual(task["id"], task_id)
+        self.assertEqual(task["ID"], task_id)
         self.assertEqual(task[0], task_id)
         self.assertEqual(task[1], "row compatible")
         self.assertEqual(task[:3], (task_id, "row compatible", "Prompt for row compatible"))
         self.assertEqual(task.keys()[:3], ["id", "title", "prompt"])
         self.assertEqual(list(task)[:3], list(task[:3]))
         self.assertEqual(dict(task)["priority"], 7)
+        with self.assertRaisesRegex(IndexError, "No item with that key"):
+            task["missing"]
 
 
 if __name__ == "__main__":

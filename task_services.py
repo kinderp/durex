@@ -84,9 +84,10 @@ class TaskRecord:
 
     def __getitem__(self, key: str | int | slice) -> object:
         if isinstance(key, str):
-            if key not in self.__dataclass_fields__:
-                raise KeyError(key)
-            return getattr(self, key)
+            field = key.lower()
+            if field not in self.__dataclass_fields__:
+                raise IndexError("No item with that key")
+            return getattr(self, field)
         return self.values()[key]
 
     def __iter__(self) -> Iterator[object]:

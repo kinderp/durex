@@ -50,11 +50,12 @@ Dependencies point inward toward transport-neutral contracts:
 ### `TaskRecord`
 
 `TaskRecord` is the complete transport-neutral representation of a persisted
-task. It preserves read-only `sqlite3.Row` access through field names, integer
-positions, slices, ordered value iteration, `keys()`, and dictionary conversion.
-Legacy callers can therefore keep using `task["id"]` or `task[0]`, while new
-code can use typed attributes such as `task.id`. It does not expose
-`sqlite3.Row` outside the repository.
+task. It preserves read-only `sqlite3.Row` access through case-insensitive field
+names, integer positions, slices, ordered value iteration, `keys()`, dictionary
+conversion, and the same missing-column `IndexError`. Legacy callers can
+therefore keep using `task["id"]`, `task["ID"]`, or `task[0]`, while new code can
+use typed attributes such as `task.id`. It does not expose `sqlite3.Row` outside
+the repository.
 
 ### `TaskRepository`
 
