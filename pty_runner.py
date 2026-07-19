@@ -34,6 +34,7 @@ request and decision concepts while avoiding terminal text parsing.
 
 from __future__ import annotations
 
+import codecs
 from dataclasses import dataclass, field
 import errno
 import os
@@ -46,6 +47,8 @@ from typing import Optional, Sequence
 
 from approval_detector import ApprovalRequest, detect_approval_request
 from approval_policy import ApprovalPolicy, PolicyAction, PolicyDecision, default_policy
+from runner_events import RunnerEventEmitter
+from runtime_contracts import RunnerEventSink, RunnerInteractionState, RunnerLifecycle
 from telegram_bridge import (
     TelegramApprovalDecision,
     TelegramApprovalRequest,
@@ -474,6 +477,8 @@ def run_pty_command(
     approval_provider: Optional[ApprovalDecisionProvider] = None,
     telegram_verbosity: str = "normal",
     config: Optional[PtyRunnerConfig] = None,
+    event_sink: Optional[RunnerEventSink] = None,
+    run_id: Optional[str] = None,
 ) -> PtyRunResult:
     """
     Run a command in a pseudo-terminal and handle approval prompts.
@@ -502,6 +507,14 @@ def run_pty_command(
         config:
             PTY runner options.
 
+        event_sink:
+            Optional consumer for ordered lifecycle, output, and interaction
+            events.
+
+        run_id:
+            Optional stable identity for this execution. A random local id is
+            generated when omitted.
+
     Returns:
         PtyRunResult with returncode, output and approval_events.
     """
@@ -510,13 +523,25 @@ def run_pty_command(
     config = config or PtyRunnerConfig()
 
     process, master_fd = spawn_pty_process(cmd, cwd=cwd)
+    task_id = int((task or {}).get("id", 0))
+    events = RunnerEventEmitter(task_id=task_id, sink=event_sink, run_id=run_id)
     output_parts: list[str] = []
     rolling_buffer = ""
     seen_request_ids: set[str] = set()
     audit_events: list[ApprovalAuditEvent] = []
     post_exit_deadline: Optional[float] = None
+    decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+
+    def append_output(chunk: str) -> None:
+        if not chunk:
+            return
+        output_parts.append(chunk)
+        events.output(chunk)
+        if config.echo_output:
+            print(chunk, end="", flush=True)
 
     try:
+        events.lifecycle(RunnerLifecycle.STARTED)
         while True:
             read_timeout = config.read_timeout_seconds
             if post_exit_deadline is not None:
@@ -538,16 +563,20 @@ def run_pty_command(
                 if not raw:
                     break
 
-                chunk = raw.decode("utf-8", errors="replace")
-                output_parts.append(chunk)
+                chunk = decoder.decode(raw)
+                append_output(chunk)
                 rolling_buffer = trim_buffer(rolling_buffer + chunk, config.max_buffer_chars)
-
-                if config.echo_output:
-                    print(chunk, end="", flush=True)
 
                 approval = detect_approval_request(rolling_buffer)
                 if approval is not None and approval.request_id not in seen_request_ids:
                     seen_request_ids.add(approval.request_id)
+                    events.interaction(
+                        interaction_id=approval.request_id,
+                        state=RunnerInteractionState.REQUESTED,
+                        kind="approval",
+                        prompt=approval.context,
+                        command=approval.command,
+                    )
                     should_continue = handle_approval_request(
                         master_fd=master_fd,
                         approval=approval,
@@ -557,8 +586,24 @@ def run_pty_command(
                         telegram_verbosity=telegram_verbosity,
                         audit_events=audit_events,
                     )
+                    audit_event = audit_events[-1]
+                    events.interaction(
+                        interaction_id=approval.request_id,
+                        state=RunnerInteractionState.RESOLVED,
+                        kind="approval",
+                        prompt=approval.context,
+                        command=approval.command,
+                        decision=audit_event.final_action,
+                        source=audit_event.source,
+                    )
                     if not should_continue:
                         returncode = terminate_process(process)
+                        append_output(decoder.decode(b"", final=True))
+                        events.lifecycle(
+                            RunnerLifecycle.CANCELLED,
+                            returncode=returncode,
+                            detail="Approval decision stopped the task.",
+                        )
                         return PtyRunResult(
                             returncode=returncode,
                             output="".join(output_parts),
@@ -577,13 +622,22 @@ def run_pty_command(
                 elif not readable:
                     break
 
+        append_output(decoder.decode(b"", final=True))
         returncode = int(process.wait())
+        events.lifecycle(
+            RunnerLifecycle.COMPLETED if returncode == 0 else RunnerLifecycle.FAILED,
+            returncode=returncode,
+        )
         return PtyRunResult(
             returncode=returncode,
             output="".join(output_parts),
             approval_events=audit_events,
         )
 
+    except BaseException:
+        if process.poll() is None:
+            terminate_process(process)
+        raise
     finally:
         try:
             os.close(master_fd)

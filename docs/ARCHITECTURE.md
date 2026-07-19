@@ -15,12 +15,13 @@ are useful as maps, but the important behavior is in the edges: an edge means
 "this component calls, writes to, reads from, or wakes up the next component
 when this trigger happens."
 
-At a high level Durex has four responsibilities:
+At a high level Durex has five responsibilities:
 
 1. store tasks in a local SQLite queue;
 2. pick runnable tasks and execute Codex in the selected runner mode;
-3. detect interactive approval prompts when the PTY runner is used;
-4. optionally ask the user through Telegram before writing an answer back into
+3. emit ordered runner events and persist bounded output while a task runs;
+4. detect interactive approval prompts when the PTY runner is used;
+5. optionally ask the user through Telegram before writing an answer back into
    Codex's terminal.
 
 The current implementation is intentionally local-first. There is no server
@@ -42,6 +43,9 @@ flowchart TD
     Runner -->|interactive approval mode| PtyRunner[PTY runner]
     SubprocessRunner --> CodexExec[Codex CLI]
     PtyRunner --> CodexInteractive[Codex CLI in pseudo-terminal]
+    SubprocessRunner --> Events[Runner event sink]
+    PtyRunner --> Events
+    Events -->|transactional live projection| DB
     CodexInteractive --> Detector[approval_detector.py]
     Detector --> Policy[approval_policy.py]
     Policy -->|auto allow| PtyRunner
@@ -70,9 +74,8 @@ terminal once a queue run is started.
 database, inserts tasks, lists tasks, runs the worker, validates Telegram
 configuration, and starts Telegram remote-control mode.
 
-`SQLite task database` is the source of truth for queued work. It stores task
-metadata, status, attempts, output, session ids, usage-limit reset times, and
-retry information.
+`SQLite task database` is the source of truth for queued work. In addition to
+task metadata and final output, it stores bounded live runs and output chunks.
 
 `Worker loop` is the scheduler. It repeatedly asks SQLite for the next runnable
 task, starts the selected runner, and persists the final result.
@@ -80,13 +83,17 @@ task, starts the selected runner, and persists the final result.
 `Runner mode` is the dispatch decision between classic non-interactive
 execution and PTY-based interactive execution.
 
-`subprocess runner` runs Codex with `subprocess.run()`. It captures stdout,
-stderr, and the return code after Codex exits. It cannot answer interactive
-terminal prompts while Codex is running.
+`subprocess runner` uses `Popen` with stdout and stderr pipes. It emits each
+decoded stream chunk before exit while preserving the historical combined
+result. It cannot answer interactive terminal prompts.
 
 `PTY runner` runs Codex inside a pseudo-terminal. It reads terminal output while
 the process is alive and can write answers such as `y\n` or `n\n` back into the
 terminal.
+
+`Runner event sink` receives one shared sequence of lifecycle, output, and
+interaction events for a run. It normalizes display output and projects
+lifecycle and output state through `TaskApplicationService`.
 
 `Codex CLI` and `Codex CLI in pseudo-terminal` are the external Codex process.
 The difference is transport: subprocess mode treats Codex as a normal child
@@ -131,7 +138,7 @@ lists tasks, or updates task fields.
 `--runner-mode` chooses subprocess or PTY.
 
 `Runner mode -> subprocess runner` is triggered when `--runner-mode subprocess`
-is selected. This is the simplest path and waits for Codex to exit.
+is selected. This path streams pipes but does not provide an input channel.
 
 `Runner mode -> PTY runner` is triggered when `--runner-mode pty` is selected.
 This path is required for live approval handling.
@@ -142,6 +149,10 @@ has a `session_id`, Durex asks Codex to resume that session.
 
 `PTY runner -> Codex CLI in pseudo-terminal` starts the same Codex command, but
 connects stdin/stdout/stderr to a pseudo-terminal.
+
+`subprocess runner -> Runner event sink` and `PTY runner -> Runner event sink`
+are triggered at process start, for each decoded output chunk, and at terminal
+completion. The sink appends each projection transactionally to SQLite.
 
 `Codex CLI in pseudo-terminal -> approval_detector.py` is triggered whenever the
 PTY runner reads a new chunk of terminal output. The runner appends the chunk to
@@ -176,7 +187,8 @@ and returns the normalized decision without polling from the runner thread.
 For approval this is usually `y\n`; for denial it is usually `n\n`.
 
 `Codex CLI -> Worker loop` and `Codex CLI in pseudo-terminal -> Worker loop`
-happen when the child process exits. The runner returns output and return code.
+happen when the child process exits. Live output has already been projected;
+the runner also returns the compatibility output and return code.
 
 `Worker loop -> SQLite` persists the outcome. It stores completed output,
 failure state, retry state, usage-limit reset time, and any detected Codex
@@ -452,7 +464,8 @@ waiting for a final approve, deny, stop, or timeout result.
 
 ## Data model overview
 
-The current database table is intentionally simple. v0.2 can keep the same task table and add optional fields later.
+The schema preserves the original task table and additively creates bounded
+live-run tables. Approval-event persistence remains planned work.
 
 ```mermaid
 %%{init: {"theme": "base", "themeVariables": {"primaryColor": "#ffffff", "primaryTextColor": "#111827", "primaryBorderColor": "#374151", "lineColor": "#374151", "secondaryColor": "#f3f4f6", "tertiaryColor": "#ffffff", "textColor": "#111827", "mainBkg": "#ffffff", "nodeBorder": "#374151", "clusterBkg": "#f9fafb", "clusterBorder": "#9ca3af", "edgeLabelBackground": "#ffffff", "actorBkg": "#ffffff", "actorBorder": "#374151", "actorTextColor": "#111827", "activationBkgColor": "#e5e7eb", "activationBorderColor": "#374151", "signalColor": "#111827", "signalTextColor": "#111827", "noteBkgColor": "#fef3c7", "noteTextColor": "#111827", "noteBorderColor": "#92400e"}}}%%
@@ -487,13 +500,38 @@ erDiagram
         text decided_at
     }
 
+    TASK_RUNS {
+        text run_id PK
+        integer task_id
+        text status
+        integer last_sequence
+        integer dropped_through_sequence
+        integer dropped_chars
+        text started_at
+        text finished_at
+    }
+
+    TASK_OUTPUT_CHUNKS {
+        text run_id
+        integer sequence
+        text text
+        integer char_count
+        text created_at
+    }
+
     TASKS ||--o{ APPROVAL_EVENTS : produces
+    TASKS ||--o{ TASK_RUNS : executes
+    TASK_RUNS ||--o{ TASK_OUTPUT_CHUNKS : contains
 ```
 
 ### Table roles
 
 `TASKS` is implemented today. It contains all queue and execution state needed
 for the current worker.
+
+`TASK_RUNS` and `TASK_OUTPUT_CHUNKS` are implemented today. They keep ordered,
+bounded display output independently for every task attempt. See
+[LIVE_OUTPUT.md](LIVE_OUTPUT.md) for exact limits and cursor semantics.
 
 `APPROVAL_EVENTS` is the planned audit table. The PTY runner already returns
 in-memory `ApprovalAuditEvent` objects, but this table is not yet persisted in
@@ -562,9 +600,12 @@ flowchart TD
     A[worker_loop check_interval stop_when_empty] --> B[get_next_task]
     B --> C[run_task dispatcher]
     C --> D[build_codex_command task]
-    D --> E{approval bridge enabled?}
-    E -->|no| F[subprocess.run cmd cwd]
-    E -->|yes| G[run_pty_command cmd cwd bridge config]
+    D --> E{runner mode}
+    E -->|subprocess| F[run_subprocess_command cmd cwd event sink]
+    E -->|pty| G[run_pty_command cmd cwd bridge event sink]
+    F --> M[emit ordered events]
+    G --> M
+    M --> N[persist bounded live output]
     F --> H[combined_output returncode]
     G --> I[PtyRunResult output returncode approval_events]
     H --> J[extract_session_id output]
@@ -591,12 +632,17 @@ is the dispatcher that chooses subprocess or PTY execution.
 `codex exec <prompt>`. Resumed tasks run `codex exec resume <session_id>
 <followup>`.
 
-`approval bridge enabled?` represents whether the run was started in PTY mode
-with Telegram approvals enabled.
+`runner mode` selects pipe-backed subprocess execution or interactive PTY
+execution. Telegram approvals are an optional dependency of the PTY path.
 
-`subprocess.run(cmd, cwd)` is the classic blocking runner path.
+`run_subprocess_command(cmd, cwd, event_sink)` is the non-interactive streaming
+runner path.
 
 `run_pty_command(cmd, cwd, bridge, config)` is the interactive runner path.
+
+`emit ordered events` assigns one `run_id` and a monotonic sequence to start,
+output, interaction, and terminal events. The persistent sink stores lifecycle
+and normalized output state while the child is running.
 
 `combined_output returncode` is stdout plus stderr and the process exit code
 from subprocess mode.
@@ -621,11 +667,13 @@ session id.
 
 `D -> E` happens after the command list is built.
 
-`E -> F` happens when the run uses subprocess mode or Telegram approval is not
-needed.
+`E -> F` happens when subprocess mode is selected.
 
 `E -> G` happens when PTY mode is selected. If Telegram is enabled, the bridge is
 passed into the PTY runner.
+
+`F -> M`, `G -> M`, and `M -> N` happen before process exit as runner output is
+decoded. Terminal lifecycle events idempotently finalize the run projection.
 
 `F -> H` happens when the subprocess exits.
 

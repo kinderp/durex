@@ -35,6 +35,8 @@ Durex solves these problems with:
 | Resume command support | Available |
 | Classic subprocess runner | Available |
 | PTY runner | Available |
+| Typed runner events | Available |
+| Bounded persistent live output | Available through application services |
 | Approval detector | Available |
 | Approval policy engine | Available |
 | Telegram approval bridge | Available |
@@ -55,6 +57,9 @@ flowchart TD
     Worker --> Runner{Runner mode}
     Runner --> Subprocess[subprocess runner]
     Runner --> PTY[PTY runner]
+    Subprocess --> Events[runner_events.py]
+    PTY --> Events
+    Events --> Live[(SQLite live output)]
     Subprocess --> CodexA[Codex CLI]
     PTY --> CodexB[Codex CLI in pseudo-terminal]
     PTY --> Detector[approval_detector.py]
@@ -72,9 +77,10 @@ flowchart TD
 In this diagram, edges represent runtime triggers. `User -> codex_queue.py`
 starts a CLI command such as `add`, `run`, `telegram-check`, or
 `telegram-control`. `Worker loop -> Runner mode` is triggered when the worker
-claims a ready task. The subprocess runner captures normal command output, while
+claims a ready task. The subprocess runner streams normal command output, while
 the PTY runner keeps Codex attached to a pseudo-terminal so interactive prompts
-can be detected.
+can be detected. Both runners emit ordered events into a bounded SQLite live
+output projection before process exit.
 
 The approval path is only active in PTY mode. Terminal output triggers
 `approval_detector.py`; detected prompts trigger `approval_policy.py`; policy can
@@ -90,6 +96,7 @@ More diagrams are available in:
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
 - [`docs/SEQUENCE_DIAGRAMS.md`](docs/SEQUENCE_DIAGRAMS.md)
 - [`docs/PTY_VS_EVENTS.md`](docs/PTY_VS_EVENTS.md)
+- [`docs/LIVE_OUTPUT.md`](docs/LIVE_OUTPUT.md)
 - [`docs/TELEGRAM_APPROVALS.md`](docs/TELEGRAM_APPROVALS.md)
 - [`docs/TELEGRAM_REMOTE_CONTROL.md`](docs/TELEGRAM_REMOTE_CONTROL.md)
 - [`docs/TELEGRAM_VOICE_COMMANDS.md`](docs/TELEGRAM_VOICE_COMMANDS.md)
@@ -141,6 +148,10 @@ python3 -m venv .venv
 ├── voice_commands.py           # Italian/English voice command parser
 ├── voice_transcriber.py        # Optional local speech-to-text providers
 ├── pty_runner.py               # PTY runner and approval pipeline
+├── subprocess_runner.py        # Incremental stdout/stderr runner
+├── runner_events.py            # Event sequencing and live-output projection
+├── runtime_contracts.py        # Transport-neutral runtime contracts
+├── task_services.py            # Task and live-output SQLite services
 ├── config.example.yaml         # Planned v0.2 configuration shape
 ├── requirements-dev.txt        # Development documentation dependencies
 ├── requirements-voice.txt      # Optional local voice transcription dependency
@@ -149,6 +160,9 @@ python3 -m venv .venv
 │   ├── test_codex_queue.py
 │   ├── test_approval_policy.py
 │   ├── test_pty_runner.py
+│   ├── test_runner_events.py
+│   ├── test_subprocess_runner.py
+│   ├── test_task_services.py
 │   ├── test_telegram_control.py
 │   ├── test_voice_commands.py
 │   └── test_voice_transcriber.py
@@ -156,6 +170,7 @@ python3 -m venv .venv
     ├── ARCHITECTURE.md
     ├── CONFIGURATION.md
     ├── FIRST_RUN_TELEGRAM_GUIDE.md
+    ├── LIVE_OUTPUT.md
     ├── PTY_VS_EVENTS.md
     ├── ROADMAP.md
     ├── SESSION_APPROVAL_DEDUP.md
@@ -286,7 +301,9 @@ This is the default mode:
 python3 codex_queue.py run --runner-mode subprocess
 ```
 
-It uses `subprocess.run()` and is best for non-interactive jobs.
+It uses a pipe-backed `Popen` runner and is best for non-interactive jobs. Both
+stdout and stderr are emitted incrementally to the bounded live-output store;
+the compatibility result still combines them after the process exits.
 
 ### PTY mode
 
@@ -648,6 +665,7 @@ Then add one task per folder. This keeps Codex isolated and avoids mixing files 
 | [`docs/CLI_DOC_AUTOMATION.md`](docs/CLI_DOC_AUTOMATION.md) | CLI documentation drift check and generator roadmap |
 | [`docs/SYSTEM_OVERVIEW.md`](docs/SYSTEM_OVERVIEW.md) | Whole-system map and Python file responsibilities |
 | [`docs/APPLICATION_SERVICES.md`](docs/APPLICATION_SERVICES.md) | Task service, repository, runner-event and transport boundaries |
+| [`docs/LIVE_OUTPUT.md`](docs/LIVE_OUTPUT.md) | Typed runner events, SQLite live output, cursors, retention and migration |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | High-level architecture and data model |
 | [`docs/SEQUENCE_DIAGRAMS.md`](docs/SEQUENCE_DIAGRAMS.md) | Function-level runtime flows |
 | [`docs/PTY_VS_EVENTS.md`](docs/PTY_VS_EVENTS.md) | Comparison between PTY and structured events |

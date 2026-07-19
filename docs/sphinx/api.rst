@@ -38,10 +38,26 @@ pty_runner
    :undoc-members:
    :show-inheritance:
 
+runner_events
+-------------
+
+.. automodule:: runner_events
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
 runtime_contracts
 -----------------
 
 .. automodule:: runtime_contracts
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+subprocess_runner
+-----------------
+
+.. automodule:: subprocess_runner
    :members:
    :undoc-members:
    :show-inheritance:

@@ -12,6 +12,13 @@ from unittest import mock
 
 from approval_policy import default_policy
 from pty_runner import PtyRunnerConfig, run_pty_command
+from runtime_contracts import (
+    RunnerInteractionEvent,
+    RunnerInteractionState,
+    RunnerLifecycle,
+    RunnerLifecycleEvent,
+    RunnerOutputEvent,
+)
 from telegram_bridge import TelegramApprovalDecision, TelegramDecisionAction
 
 
@@ -42,17 +49,36 @@ class PtyRunnerApprovalTests(unittest.TestCase):
             "print('approval result=' + answer)"
         )
 
+        events = []
         result = run_pty_command(
             cmd=[sys.executable, "-c", script],
             cwd=os.getcwd(),
             policy=default_policy(),
             config=PtyRunnerConfig(echo_output=False),
+            event_sink=events.append,
+            run_id="test-run",
         )
 
         self.assertEqual(result.returncode, 0)
         self.assertEqual(len(result.approval_events), 1)
         self.assertEqual(result.approval_events[0].command, "pytest -q")
         self.assertIn("approval result=y", result.output)
+        self.assertEqual([event.sequence for event in events], list(range(1, len(events) + 1)))
+        self.assertTrue(all(event.run_id == "test-run" for event in events))
+        self.assertEqual(
+            [event.state for event in events if isinstance(event, RunnerLifecycleEvent)],
+            [RunnerLifecycle.STARTED, RunnerLifecycle.COMPLETED],
+        )
+        interactions = [event for event in events if isinstance(event, RunnerInteractionEvent)]
+        self.assertEqual(
+            [event.state for event in interactions],
+            [RunnerInteractionState.REQUESTED, RunnerInteractionState.RESOLVED],
+        )
+        self.assertEqual(interactions[-1].decision, "approve")
+        self.assertEqual(
+            "".join(event.text for event in events if isinstance(event, RunnerOutputEvent)),
+            result.output,
+        )
 
     def test_human_required_prompt_waits_on_decision_provider(self):
         """The PTY must consume the broker contract without polling Telegram."""
@@ -76,6 +102,29 @@ class PtyRunnerApprovalTests(unittest.TestCase):
                 self.assertEqual(len(provider.requests), 1)
                 self.assertEqual(provider.requests[0].command, "git push origin feature")
                 self.assertIn("approval result=n", result.output)
+
+    def test_stop_decision_emits_cancelled_lifecycle(self):
+        """A human stop is terminal and distinct from process failure."""
+
+        script = "input('Command: git push\\nApprove this command? [y/N] ')"
+        provider = StaticApprovalProvider(TelegramDecisionAction.STOP)
+        events = []
+
+        result = run_pty_command(
+            cmd=[sys.executable, "-c", script],
+            policy=default_policy(),
+            approval_provider=provider,
+            config=PtyRunnerConfig(echo_output=False),
+            event_sink=events.append,
+            run_id="stopped-run",
+        )
+
+        lifecycle = [event for event in events if isinstance(event, RunnerLifecycleEvent)]
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(
+            [event.state for event in lifecycle],
+            [RunnerLifecycle.STARTED, RunnerLifecycle.CANCELLED],
+        )
 
     def test_post_exit_drain_has_total_deadline(self):
         """Continuous descendant output must not keep a completed task alive."""
@@ -112,6 +161,42 @@ class PtyRunnerApprovalTests(unittest.TestCase):
         self.assertEqual(result.output, "xx")
         self.assertEqual(select_call.call_count, 2)
         self.assertAlmostEqual(select_call.call_args_list[1].args[3], 0.3)
+
+    def test_split_utf8_bytes_emit_one_valid_character(self):
+        """PTY byte boundaries must not introduce replacement characters."""
+
+        process = mock.Mock()
+        process.poll.side_effect = (None, 0, 0)
+        process.wait.return_value = 0
+        events = []
+
+        with mock.patch(
+            "pty_runner.spawn_pty_process",
+            return_value=(process, 99),
+        ), mock.patch(
+            "pty_runner.select.select",
+            side_effect=(([99], [], []), ([99], [], []), ([], [], [])),
+        ), mock.patch(
+            "pty_runner.os.read",
+            side_effect=(b"\xe2", b"\x82\xac"),
+        ), mock.patch(
+            "pty_runner.os.close",
+        ), mock.patch(
+            "pty_runner.time.monotonic",
+            side_effect=(0.0, 0.1),
+        ):
+            result = run_pty_command(
+                cmd=["ignored"],
+                config=PtyRunnerConfig(echo_output=False),
+                event_sink=events.append,
+                run_id="utf8-run",
+            )
+
+        output = "".join(
+            event.text for event in events if isinstance(event, RunnerOutputEvent)
+        )
+        self.assertEqual(result.output, "\u20ac")
+        self.assertEqual(output, "\u20ac")
 
 
 if __name__ == "__main__":

@@ -42,6 +42,7 @@ flowchart TD
     Runner{Runner mode}
     Subprocess[subprocess runner]
     PTY[pty_runner.py]
+    Events[runner_events.py]
     Codex[Codex CLI]
     Detector[approval_detector.py]
     Policy[approval_policy.py]
@@ -78,8 +79,9 @@ flowchart TD
     Broker --> Gateway
     Gateway -->|ApprovalDecision| PTY
     PTY -->|write y or n, or stop| Codex
-    Subprocess -->|output and return code| Services
-    PTY -->|output and return code| Services
+    Subprocess -->|typed lifecycle and output| Events
+    PTY -->|typed lifecycle output interaction| Events
+    Events -->|bounded live projection| Services
 ```
 
 ### Map nodes
@@ -104,20 +106,23 @@ Telegram voice commands.
 `voice_commands.py` turns Italian or English transcripts into structured queue
 commands.
 
-`SQLite task queue` is the durable system state. It stores tasks, priority,
-attempts, status, output, last error, session id, and usage-limit reset time.
+`SQLite task queue` is the durable system state. It stores task state and final
+output plus bounded per-run live output and lifecycle metadata.
 
 `Worker loop` is the local scheduler. It repeatedly claims the next runnable task
 and runs it until the queue is empty, blocked, or stopped.
 
 `Runner mode` selects between the classic subprocess path and the PTY path.
 
-`subprocess runner` is the simple non-interactive execution path in
-`codex_queue.py`.
+`subprocess runner` is the pipe-backed non-interactive execution path in
+`subprocess_runner.py`.
 
 `pty_runner.py` is the interactive execution path. It runs Codex in a
 pseudo-terminal, reads output incrementally, detects approval prompts, and writes
 decisions back to the terminal.
+
+`runner_events.py` owns event sequencing, terminal-display normalization, and
+the persistent sink shared by both runner modes.
 
 `Codex CLI` is the external agent process doing the requested work.
 
@@ -195,9 +200,10 @@ and messages continue to `TelegramControlBot`.
 `pty_runner.py -> Codex CLI` is triggered after a final approval decision. The
 runner writes `y\n`, writes `n\n`, or terminates the process.
 
-`subprocess runner -> SQLite task queue` and `pty_runner.py -> SQLite task queue`
-are triggered when task output, exit status, resume information, or errors are
-recorded.
+`subprocess runner -> runner_events.py` and `pty_runner.py -> runner_events.py`
+are triggered at process start, on each output chunk, and at terminal state.
+The persistent sink projects bounded output and lifecycle state through
+`task_services.py` before the child exits.
 
 `pty_runner.py` also returns approval events in memory as part of the PTY result.
 Those events are not persisted to SQLite today; storing them in an audit table is
@@ -224,6 +230,7 @@ It is responsible for:
 - detecting usage-limit output;
 - building Codex commands;
 - dispatching tasks to subprocess mode or PTY mode;
+- creating one persistent runner-event sink for each task attempt;
 - composing standalone Telegram dispatcher runtimes when PTY approvals are enabled;
 - exposing CLI commands such as `init`, `add`, `list`, `run`, `telegram-check`,
   and `telegram-control`.
@@ -249,6 +256,8 @@ It is responsible for:
 - creating the task schema and executing all task SQL;
 - queue ordering, runnable selection, status counts, task detail, and output
   lookup;
+- starting and finalizing runs, appending bounded output, and serving monotonic
+  `Refresh`/`More` cursor pages;
 - normal updates and atomic expected-status transitions;
 - the `TaskApplicationService` used by CLI, worker, and Telegram adapters.
 
@@ -257,11 +266,34 @@ Details: [APPLICATION_SERVICES.md](APPLICATION_SERVICES.md)
 ### `runtime_contracts.py`
 
 `runtime_contracts.py` defines transport-neutral protocols and event types for
-task runners, worker supervision, and Telegram transport. These contracts are
-the migration targets for the dispatcher, live output, and durable supervisor
-issues; they do not import Telegram or SQLite implementation types.
+task runners, worker supervision, and Telegram transport. Lifecycle, output,
+and interaction events share a run id and monotonic sequence; the contracts do
+not import Telegram or SQLite implementation types.
 
 Details: [APPLICATION_SERVICES.md - Runtime contracts](APPLICATION_SERVICES.md#runtime-contracts)
+
+### `runner_events.py`
+
+`runner_events.py` is the shared event and live-output adapter.
+
+It is responsible for:
+
+- assigning one run id and ordered sequence to runner events;
+- incrementally decoding terminal display semantics such as ANSI and carriage
+  returns;
+- applying best-effort display redaction;
+- projecting lifecycle and output events through `TaskApplicationService`;
+- idempotently failing a run left open by an exceptional runner path.
+
+Details: [LIVE_OUTPUT.md](LIVE_OUTPUT.md)
+
+### `subprocess_runner.py`
+
+`subprocess_runner.py` starts non-interactive commands with `Popen`, reads
+stdout and stderr incrementally, emits ordered events, and preserves the legacy
+combined final result.
+
+Details: [LIVE_OUTPUT.md - Runner behavior](LIVE_OUTPUT.md#runner-behavior)
 
 ### `pty_runner.py`
 
@@ -271,6 +303,7 @@ It is responsible for:
 
 - spawning Codex inside a pseudo-terminal;
 - reading terminal output incrementally;
+- incrementally decoding UTF-8 and emitting ordered runtime events;
 - keeping a rolling buffer for prompt detection;
 - calling `approval_detector.py`;
 - calling `approval_policy.py`;
@@ -445,7 +478,14 @@ finalization, retry, runner dispatch, Telegram check helpers, and session
 extraction.
 
 `tests/test_task_services.py` covers task ordering, usage-limit eligibility,
-atomic expected-status transitions, recency ordering, and output lookup.
+atomic expected-status transitions, recency ordering, bounded live output,
+cursor reads, migration, restart, retention, and idempotent finalization.
+
+`tests/test_runner_events.py` covers event ordering, terminal normalization,
+redaction, persistence, and fail-open finalization.
+
+`tests/test_subprocess_runner.py` covers incremental stdout/stderr events and
+subprocess terminal lifecycle state.
 
 `tests/test_pty_runner.py` covers PTY execution and verifies that approval
 prompts are handled once.
@@ -511,7 +551,8 @@ The scheduling loop:
 3. marks the selected task as `RUNNING`;
 4. increments attempts;
 5. chooses the configured runner mode;
-6. records final output, failure, completion, or waiting state.
+6. persists typed live output while the process is active;
+7. records final output, failure, completion, or waiting state.
 
 Details:
 
@@ -525,10 +566,11 @@ Subprocess mode is the simple path.
 The flow:
 
 1. `codex_queue.py` builds a Codex command from the task row.
-2. The command runs through `subprocess.run()`.
-3. Durex captures stdout and stderr after the process exits.
-4. The output is scanned for usage-limit messages and session ids.
-5. The task becomes `COMPLETED`, `FAILED`, or `WAITING_LIMIT`.
+2. `subprocess_runner.py` starts the command with stdout and stderr pipes.
+3. Each decoded chunk is emitted and persisted before process exit.
+4. The compatibility result combines stdout followed by stderr.
+5. The output is scanned for usage-limit messages and session ids.
+6. The task becomes `COMPLETED`, `FAILED`, or `WAITING_LIMIT`.
 
 Use this path for non-interactive jobs where Codex will not need live terminal
 input.
@@ -670,6 +712,7 @@ Details:
 | How do Telegram bot values get configured? | [TELEGRAM_APPROVALS.md - Environment variables](TELEGRAM_APPROVALS.md#environment-variables) | [TELEGRAM_REMOTE_CONTROL.md - Starting Remote Control](TELEGRAM_REMOTE_CONTROL.md#starting-remote-control) |
 | How does remote queue control work? | `telegram_control.py` section here | [TELEGRAM_REMOTE_CONTROL.md](TELEGRAM_REMOTE_CONTROL.md) |
 | How are duplicate approvals avoided? | `approval_detector.py` section here | [SESSION_APPROVAL_DEDUP.md](SESSION_APPROVAL_DEDUP.md) |
+| How is active output stored and paged? | `runner_events.py` section here | [LIVE_OUTPUT.md](LIVE_OUTPUT.md) |
 | What is planned next? | [ROADMAP.md](ROADMAP.md) | [PTY_VS_EVENTS.md - Structured events](PTY_VS_EVENTS.md#structured-events) |
 
 ---
@@ -694,8 +737,8 @@ For a first full understanding:
 For code reading:
 
 1. start with `codex_queue.py`;
-2. follow `run_task()` into subprocess or `run_codex_pty()`;
-3. follow PTY mode into `pty_runner.py`;
+2. follow `run_task()` into `subprocess_runner.py` or `pty_runner.py`;
+3. follow emitted events into `runner_events.py` and `task_services.py`;
 4. follow approval detection into `approval_detector.py`;
 5. follow decisions into `approval_policy.py`;
 6. follow Telegram approvals into `telegram_bridge.py`;

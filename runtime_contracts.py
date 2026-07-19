@@ -19,6 +19,13 @@ class RunnerLifecycle(str, Enum):
     CANCELLED = "cancelled"
 
 
+class RunnerInteractionState(str, Enum):
+    """Lifecycle states for one runner interaction."""
+
+    REQUESTED = "requested"
+    RESOLVED = "resolved"
+
+
 @dataclass(frozen=True)
 class RunnerLifecycleEvent:
     """A transport-neutral runner lifecycle event."""
@@ -27,6 +34,8 @@ class RunnerLifecycleEvent:
     state: RunnerLifecycle
     returncode: Optional[int] = None
     detail: Optional[str] = None
+    run_id: str = ""
+    sequence: int = 0
 
 
 @dataclass(frozen=True)
@@ -36,6 +45,7 @@ class RunnerOutputEvent:
     task_id: int
     sequence: int
     text: str
+    run_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -47,6 +57,11 @@ class RunnerInteractionEvent:
     kind: str
     prompt: str
     command: Optional[str] = None
+    run_id: str = ""
+    sequence: int = 0
+    state: RunnerInteractionState = RunnerInteractionState.REQUESTED
+    decision: Optional[str] = None
+    source: Optional[str] = None
 
 
 RunnerEvent = Union[RunnerLifecycleEvent, RunnerOutputEvent, RunnerInteractionEvent]

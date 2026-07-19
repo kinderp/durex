@@ -25,6 +25,12 @@ The central design question is: should Durex infer what Codex is doing by
 watching terminal text, or should Codex report what it is doing through explicit
 machine-readable events?
 
+Terminology matters here. Durex now emits its own typed `started`, `output`,
+`interaction`, and `finished` events from both current runners. Those events
+normalize Durex's runtime and feed bounded SQLite live output. The "structured
+events" option compared below means a future machine-readable event protocol
+provided by Codex itself; it is not the internal event layer already in use.
+
 PTY is the current practical path because it works with existing interactive
 terminal behavior. Structured events are the cleaner long-term path because
 they remove most text parsing heuristics.
@@ -118,11 +124,13 @@ sequenceDiagram
     participant Runner as PTY runner
     participant Codex as Codex CLI
     participant Detector as Approval detector
+    participant Sink as Persistent runner event sink
     participant Telegram as Telegram bridge
     participant User
 
     Runner->>Codex: spawn command in PTY
     Codex-->>Runner: terminal output
+    Runner->>Sink: ordered output event
     Runner->>Detector: detect_approval_request(buffer)
     Detector-->>Runner: ApprovalRequest(command, context)
     Runner->>Telegram: ask user for approval
@@ -145,6 +153,9 @@ interactive terminal.
 keeps only recent output, detects prompt-like text, and returns a normalized
 `ApprovalRequest`.
 
+`Persistent runner event sink` normalizes each display chunk and appends it to
+the bounded live-output projection. It is independent of prompt detection.
+
 `Telegram approval gateway` is the remote human approval boundary. It sends a
 message and waits on the local broker while the shared dispatcher owns Telegram
 polling.
@@ -159,6 +170,10 @@ to PTY mode.
 
 `Codex -> Runner: terminal output` happens repeatedly while the child process is
 alive. Each chunk can be ordinary output or a prompt.
+
+`Runner -> Persistent runner event sink` happens for every decoded chunk, so
+authorized adapters can read output before process exit. Current Telegram
+buttons for that read path are tracked separately by issue `#12`.
 
 `Runner -> Detector` happens after each chunk is appended to the rolling buffer.
 The detector is called many times, but it returns an approval only when the tail
@@ -367,6 +382,7 @@ run and that a normalized result will come back.
 whether a task is executed through PTY text parsing or structured events.
 
 `PTY runner` is the current concrete implementation. It talks to terminal I/O.
+It also emits Durex's internal typed events through the shared event sink.
 
 `Structured event runner` is the future concrete implementation. It talks to an
 event stream and response channel.
@@ -412,6 +428,11 @@ RunResult {
   error
 }
 ```
+
+The current PTY and subprocess runners additionally publish the same internal
+event envelope documented in [LIVE_OUTPUT.md](LIVE_OUTPUT.md). A future Codex
+event runner should target that envelope instead of creating another storage
+contract.
 
 ---
 

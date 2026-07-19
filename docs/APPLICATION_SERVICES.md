@@ -4,10 +4,10 @@ This document defines the internal boundaries introduced for roadmap issue #8.
 They preserve the current CLI and Telegram behavior while separating queue
 persistence, application operations, runtime contracts, and transport adapters.
 
-The change is intentionally incremental. Issue #9 now supplies shared Telegram
-polling and approval brokering on top of these boundaries. Live output, durable
-worker ownership, and immediate process cancellation remain assigned to issues
-#10 through #15.
+The change is intentionally incremental. Issue #9 supplies shared Telegram
+polling and approval brokering. Issue #10 connects both runners to typed events
+and bounded persistent live output. Durable worker ownership and immediate
+process cancellation remain assigned to issues #11 through #15.
 
 ## Dependency direction
 
@@ -30,6 +30,8 @@ flowchart LR
     SQLite --> DB
     Telegram --> Contracts
     Runner --> Contracts
+    Runner --> EventSink[PersistentRunnerEventSink]
+    EventSink --> Service
     Transport --> Contracts
 ```
 
@@ -69,7 +71,9 @@ service:
 - select the next runnable task;
 - count tasks by status;
 - update task fields;
-- perform compare-and-set status transitions.
+- perform compare-and-set status transitions;
+- start and finalize task runs idempotently;
+- append bounded ordered output and read it with sequence cursors.
 
 `transition()` is the atomic state-transition boundary. It updates a task only
 when the persisted status belongs to the caller's expected status set. Issue
@@ -81,6 +85,8 @@ introduces and tests the contract without changing current claiming behavior.
 `SQLiteTaskRepository` is the current single-host implementation. It owns the
 schema and all task SQL. Connections and the clock are injected, which keeps
 tests isolated while preserving the existing `codex_queue.DB_PATH` behavior.
+It also owns the additive `task_runs` and `task_output_chunks` tables. Append,
+deduplication, compaction, and run metadata updates share one short transaction.
 
 ### `TaskApplicationService`
 
@@ -88,7 +94,9 @@ tests isolated while preserving the existing `codex_queue.DB_PATH` behavior.
 
 - local CLI initialization, add, list, scheduling, and updates;
 - Telegram status, recent tasks, detail, output tail, guided add, and worker
-  scheduling.
+  scheduling;
+- live run start, append, finalization, and cursor reads for future presentation
+  adapters.
 
 The public functions in `codex_queue.py` remain compatibility shims. Existing
 callers do not need to change, but the shims delegate to the same application
@@ -109,10 +117,15 @@ The runner event union contains:
 - `RunnerInteractionEvent` for a transport-neutral request that needs a
   decision.
 
+Every event carries task id, run id, and one shared monotonic sequence. Output
+sequences can contain gaps when lifecycle or interaction events occur. PTY
+interactions emit requested and resolved states.
+
 `TaskRunner` accepts a `TaskRecord` and an event sink, then returns a normalized
-`RunnerResult`. Current subprocess and PTY functions remain legacy adapters.
-Issue #9 changed PTY approval waits to consume `ApprovalDecisionProvider`, while
-issue #10 will connect output and lifecycle behavior to the runner event contract.
+`RunnerResult`. `run_pty_command()` and `run_subprocess_command()` are current
+adapters. Issue #9 changed PTY approval waits to consume
+`ApprovalDecisionProvider`; issue #10 connects lifecycle and output to
+`PersistentRunnerEventSink`.
 
 ### Worker supervision
 
@@ -137,20 +150,27 @@ depending on transport polling.
 The #8 extraction preserves:
 
 - CLI subcommands and output formatting;
-- task schema and existing database files;
+- the existing `tasks` schema and database rows, with additive live-output tables;
 - queue ordering by status, priority, and identifier;
 - runnable selection for `PENDING` and elapsed `WAITING_LIMIT` tasks;
 - retry, usage-limit resume, session-id, and finalization behavior;
 - Telegram authorization, callbacks, buttons, text, and voice commands;
 - subprocess and PTY runner selection.
 
-No migration command is required. Existing task databases continue to use the
-same schema.
+No migration command is required. Initialization creates `task_runs` and
+`task_output_chunks` idempotently without rewriting `tasks`. Historical
+`tasks.output` remains the final compatibility value; live display chunks are a
+separate bounded and normalized projection.
 
 ## Characterization coverage
 
 `tests/test_task_services.py` covers persistence ordering, elapsed reset times,
-atomic status transitions, recent-task lookup, and latest-output selection.
+atomic status transitions, live-output migration, cursors, deduplication,
+compaction, retention, restart, and finalization.
+
+`tests/test_runner_events.py` and `tests/test_subprocess_runner.py` cover event
+projection, terminal normalization, secret redaction boundaries, split ANSI and
+UTF-8 input, and subprocess streaming.
 
 `tests/test_codex_queue.py` covers successful finalization, usage-limit
 suspension, retry exhaustion, session preservation, and runner dispatch.
@@ -164,9 +184,10 @@ discovery.
 
 The following behavior is deliberately outside #8:
 
-- live runner event emission and bounded persistent output: #10;
 - atomic task claiming, leases, recovery, and immediate cancellation: #11;
 - the mobile live task console: #12;
 - durable interaction audit and lifecycle notifications: #13;
 - unified validated configuration and migrations: #14;
 - end-to-end release hardening: #15.
+
+The complete issue #10 contract is documented in [LIVE_OUTPUT.md](LIVE_OUTPUT.md).

@@ -9,6 +9,8 @@ import unittest
 from unittest import mock
 
 import codex_queue
+from runner_events import RunnerEventEmitter
+from runtime_contracts import RunnerLifecycle, RunnerResult
 from telegram_bridge import TelegramBridgeConfig, TelegramBridgeError
 from telegram_control import (
     TelegramControlError,
@@ -294,19 +296,34 @@ class TelegramControlTests(unittest.TestCase):
             allowed_workdirs=[self.tmp.name],
             runner_mode="subprocess",
         )
-        completed = mock.Mock(returncode=0, stdout="worker done", stderr="")
         notifications = []
+
+        def complete_subprocess(
+            _cmd, *, task_id, cwd, event_sink, run_id
+        ):
+            self.assertEqual(cwd, self.tmp.name)
+            emitter = RunnerEventEmitter(task_id, event_sink, run_id)
+            emitter.lifecycle(RunnerLifecycle.STARTED)
+            emitter.output("worker done")
+            emitter.lifecycle(RunnerLifecycle.COMPLETED, returncode=0)
+            return RunnerResult(returncode=0, output="worker done\n")
 
         with mock.patch.object(
             codex_queue,
             "get_task_service",
             side_effect=AssertionError("global service lookup"),
-        ), mock.patch.object(codex_queue.subprocess, "run", return_value=completed):
+        ), mock.patch.object(
+            codex_queue,
+            "run_subprocess_command",
+            side_effect=complete_subprocess,
+        ):
             run_worker_until_empty(state, config, notifications.append, task_service)
 
         stored = task_service.task_detail(task_id)
         self.assertEqual(stored.status, "COMPLETED")
         self.assertEqual(stored.output, "worker done\n")
+        page = task_service.live_output(task_id)
+        self.assertEqual("".join(chunk.text for chunk in page.chunks), "worker done")
         self.assertEqual(
             notifications,
             [

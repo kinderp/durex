@@ -165,6 +165,18 @@ events
 `events` is reserved for a future structured-event runner. It is not a current
 `codex_queue.py run --runner-mode` value.
 
+Both current runner modes already emit Durex's internal typed lifecycle and
+output events. These are independent of the future Codex structured-event
+transport described by `events`.
+
+### Live-output limits
+
+Live output currently uses conservative built-in bounds: 200,000 display
+characters and 1,000 chunks per run, with three completed runs retained per
+task. These values are not YAML or environment settings yet; issue `#14` owns
+their integration into effective configuration. See
+[LIVE_OUTPUT.md](LIVE_OUTPUT.md) for storage and cursor behavior.
+
 ---
 
 ### check_interval_seconds

@@ -256,10 +256,11 @@ Use it when:
 - the task is non-interactive;
 - you do not expect Codex to ask live approval questions;
 - you want the simplest execution path;
-- output after process exit is enough.
+- you do not need terminal input while the process is running.
 
-Subprocess mode runs Codex with `subprocess.run()`. Durex sees the final output
-and return code only after Codex exits.
+Subprocess mode starts Codex with pipe-backed stdout and stderr. Durex emits
+typed output events and persists bounded display output while Codex is still
+running. The final compatibility result remains stdout followed by stderr.
 
 ### PTY runner
 
@@ -280,6 +281,12 @@ PTY mode reads terminal output incrementally. When an approval prompt is
 detected, Durex can write `y\n`, write `n\n`, ask Telegram, or stop the task.
 
 Details: [PTY_VS_EVENTS.md](PTY_VS_EVENTS.md)
+
+Both runner modes publish ordered lifecycle and output events to SQLite. The
+current Telegram `/tail` command still reads the completed task snapshot;
+interactive `Refresh` and `More` access to the live store is tracked by issue
+`#12`. See [LIVE_OUTPUT.md](LIVE_OUTPUT.md) for the event, cursor, retention,
+normalization, and recovery contracts.
 
 ---
 
