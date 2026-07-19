@@ -257,12 +257,19 @@ def parse_voice_command(
     if text in {"add task", "new task", "aggiungi task", "aggiungi un task", "crea task"}:
         return VoiceCommand(action="add_wizard", transcript=text)
 
+    add_error: Optional[VoiceCommandError] = None
     if text.startswith(("add task", "aggiungi task", "aggiungi un task", "crea task")):
-        return parse_add_voice_command(text, aliases)
+        try:
+            return parse_add_voice_command(text, aliases)
+        except VoiceCommandError as exc:
+            add_error = exc
 
     alias_action = command_aliases.get(text)
     if alias_action:
         return VoiceCommand(action=alias_action, transcript=text)
+
+    if add_error is not None:
+        raise add_error
 
     raise VoiceCommandError(f"Voice command not recognized: {transcript}")
 

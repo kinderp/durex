@@ -293,6 +293,10 @@ Durex rejects a phrase that already belongs to a different built-in action. For
 example, `/learn run status` is rejected because `status` already has an
 unambiguous built-in meaning.
 
+Structured add syntax keeps precedence when all required fields parse. If an
+add-like transcript is incomplete, an exact learned simple-action alias may
+handle it; without that alias Durex preserves the original structured error.
+
 Learn buttons and add-task wizards expire after 900 seconds and each state
 collection retains at most 100 entries by default. Override these daemon-local
 limits with `DUREX_TELEGRAM_INTERACTIVE_STATE_TTL_SECONDS` and

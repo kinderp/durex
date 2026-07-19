@@ -55,6 +55,22 @@ class VoiceCommandTests(unittest.TestCase):
         self.assertEqual(command.action, "run")
         self.assertEqual(command.transcript, "abbia walker")
 
+    def test_add_like_alias_runs_after_structured_parse_failure(self):
+        """An exact safe alias should recover an incomplete add-like transcript."""
+
+        command = parse_voice_command(
+            "add task nonsense",
+            command_aliases={"add task nonsense": "run"},
+        )
+
+        self.assertEqual(command.action, "run")
+
+    def test_add_like_phrase_keeps_structured_error_without_alias(self):
+        """Incomplete add phrases should retain their detailed error without an alias."""
+
+        with self.assertRaisesRegex(VoiceCommandError, "missing title/titolo"):
+            parse_voice_command("add task nonsense")
+
     def test_stop_english(self):
         """English stop commands should request cooperative worker stop."""
 

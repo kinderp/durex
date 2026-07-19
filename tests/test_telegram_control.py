@@ -21,6 +21,7 @@ from telegram_control import (
     write_private_atomic_text,
 )
 from voice_transcriber import StaticVoiceTranscriber, TranscriptionResult
+from voice_commands import parse_voice_command
 
 
 class FakeBridge:
@@ -621,6 +622,17 @@ class TelegramControlTests(unittest.TestCase):
         self.assertEqual(persisted.count("same phrase"), 1)
         self.assertNotIn('"status"', persisted)
         self.assertEqual(reloaded["same phrase"], "run")
+
+    def test_add_like_voice_alias_works_after_persisted_reload(self):
+        """A learned add-like phrase should resolve after loading aliases from disk."""
+
+        alias_file = str(Path(self.tmp.name) / "voice_aliases.json")
+        save_voice_command_alias(alias_file, "run", "add task nonsense")
+
+        aliases = load_voice_command_aliases(alias_file)
+        command = parse_voice_command("add task nonsense", command_aliases=aliases)
+
+        self.assertEqual(command.action, "run")
 
     def test_voice_alias_file_is_atomically_replaced_with_private_mode(self):
         """Alias persistence should replace complete data with owner-only access."""
