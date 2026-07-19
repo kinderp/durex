@@ -68,10 +68,15 @@ flowchart TD
     PTY -->|recent terminal text| Detector
     Detector -->|ApprovalRequest| Policy
     Policy -->|auto allow or deny| PTY
-    Policy -->|ask user| Bridge
-    Bridge -->|sendMessage or getUpdates| Phone
+    Policy -->|ask user| Gateway[Approval gateway]
+    Gateway -->|sendMessage| Bridge
+    Dispatcher[Telegram dispatcher] -->|getUpdates| Bridge
+    Bridge --> Phone
     Phone -->|button callback| Bridge
-    Bridge -->|ApprovalDecision| PTY
+    Bridge --> Dispatcher
+    Dispatcher --> Broker[Approval broker]
+    Broker --> Gateway
+    Gateway -->|ApprovalDecision| PTY
     PTY -->|write y or n, or stop| Codex
     Subprocess -->|output and return code| Services
     PTY -->|output and return code| Services
@@ -123,7 +128,10 @@ objects.
 or must be sent to Telegram.
 
 `telegram_bridge.py` is the shared Telegram Bot API client for approval messages,
-callbacks, test messages, and chat-id discovery.
+update transport, test messages, and chat-id discovery.
+
+`telegram_dispatcher.py` owns the process-level update loop, callback namespace
+routing, one-use approval correlation, and thread-safe approval broker.
 
 `Telegram chat` is the configured chat id authorized to approve prompts or issue
 remote-control commands.
@@ -171,14 +179,18 @@ interactive approval prompt is detected.
 `approval_policy.py -> pty_runner.py` is triggered when policy can auto-allow or
 auto-deny.
 
-`approval_policy.py -> telegram_bridge.py` is triggered when policy requires a
-human decision.
+`approval_policy.py -> TelegramApprovalGateway` is triggered when policy
+requires a human decision.
 
 `telegram_bridge.py -> Telegram chat` is triggered by `sendMessage` for approval
 requests, context messages, remote-control responses, and test messages.
 
-`Telegram chat -> telegram_bridge.py` is triggered by approval button callbacks
-or by message updates fetched through long polling.
+`Telegram chat -> telegram_bridge.py -> TelegramUpdateDispatcher` is triggered
+by approval callbacks or message updates fetched through the single long poll.
+
+`TelegramUpdateDispatcher -> TelegramApprovalBroker` is triggered only for a
+validated callback in the `durex:<token>:<action>` namespace. Other callbacks
+and messages continue to `TelegramControlBot`.
 
 `pty_runner.py -> Codex CLI` is triggered after a final approval decision. The
 runner writes `y\n`, writes `n\n`, or terminates the process.
@@ -212,7 +224,7 @@ It is responsible for:
 - detecting usage-limit output;
 - building Codex commands;
 - dispatching tasks to subprocess mode or PTY mode;
-- building Telegram approval bridges when PTY approvals are enabled;
+- composing standalone Telegram dispatcher runtimes when PTY approvals are enabled;
 - exposing CLI commands such as `init`, `add`, `list`, `run`, `telegram-check`,
   and `telegram-control`.
 
@@ -334,12 +346,11 @@ It is responsible for:
 - building approval messages at compact, normal, or verbose levels;
 - polling Telegram updates;
 - extracting chat ids from updates;
-- parsing approval callback data;
-- validating callbacks against chat id and request id;
-- returning normalized `TelegramApprovalDecision` objects.
+
+Callback parsing and decision coordination live in `telegram_dispatcher.py`.
 
 Read this file when you want to understand Telegram API interaction and approval
-button handling.
+message rendering.
 
 Details:
 
@@ -347,13 +358,29 @@ Details:
 - Approval lifecycle: [TELEGRAM_APPROVALS.md - Approval request lifecycle](TELEGRAM_APPROVALS.md#approval-request-lifecycle)
 - Telegram setup: [TELEGRAM_APPROVALS.md - Environment variables](TELEGRAM_APPROVALS.md#environment-variables)
 
-### `telegram_control.py`
+### `telegram_dispatcher.py`
 
-`telegram_control.py` is the remote queue-control daemon.
+`telegram_dispatcher.py` is the process-level Telegram orchestration boundary.
 
 It is responsible for:
 
-- long-polling Telegram message updates;
+- owning the only runtime `getUpdates` loop;
+- routing control messages and callback namespaces;
+- validating approval callback chat ids, tokens, and actions;
+- registering pending approvals before outbound messages are visible;
+- resolving final decisions once and keeping `show_context` nonterminal;
+- applying bounded duplicate detection, timeout, retry, and conservative shutdown.
+
+Read [TELEGRAM_UPDATE_DISPATCHER.md](TELEGRAM_UPDATE_DISPATCHER.md) for the full
+ownership and failure contract.
+
+### `telegram_control.py`
+
+`telegram_control.py` is the remote queue-control adapter.
+
+It is responsible for:
+
+- handling message and non-approval callback updates routed by the dispatcher;
 - accepting commands only from `DUREX_TELEGRAM_CHAT_ID`;
 - parsing `/add` arguments safely;
 - optionally downloading and dispatching authorized voice messages;
@@ -574,9 +601,10 @@ The flow:
 
 1. `pty_runner.py` converts the detector request into a
    `TelegramApprovalRequest`;
-2. `telegram_bridge.py` sends a message with inline buttons;
-3. the bridge polls callback updates;
-4. callbacks are accepted only from the allowed chat and matching request id;
+2. `TelegramApprovalGateway` registers a one-use token and sends a message with
+   inline buttons;
+3. `TelegramUpdateDispatcher` receives callback updates through its single poll;
+4. callbacks are accepted only from the allowed chat and matching one-use token;
 5. approve, deny, stop, timeout, or show-context actions are normalized;
 6. the PTY runner writes the final decision back into Codex or stops the task.
 
@@ -593,7 +621,7 @@ terminal input.
 
 The flow:
 
-1. `telegram_control.py` starts a long-polling daemon;
+1. `telegram_control.py` starts the shared update dispatcher;
 2. messages are ignored unless they come from the allowed chat id;
 3. supported text commands are routed to queue or worker operations;
 4. authorized voice messages are downloaded, transcribed locally, and parsed

@@ -70,6 +70,14 @@ telegram_control
    :undoc-members:
    :show-inheritance:
 
+telegram_dispatcher
+-------------------
+
+.. automodule:: telegram_dispatcher
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
 voice_commands
 --------------
 

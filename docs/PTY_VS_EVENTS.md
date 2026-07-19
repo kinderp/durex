@@ -97,6 +97,11 @@ normal command output.
 
 `Pseudo terminal -> Durex PTY runner` with `read output` is triggered when
 `select()` reports that the PTY master file descriptor has bytes ready.
+After the direct child exits, the runner drains data already buffered by the
+PTY until EOF/EIO, one complete read interval is quiet, or the configured total
+post-exit deadline expires. This preserves final output without waiting
+indefinitely for descendant processes that retain and write through the slave
+descriptor.
 
 `Durex PTY runner -> Pseudo terminal` with `write y or n` is triggered after the
 policy path produces a final approve or deny decision.
@@ -140,8 +145,9 @@ interactive terminal.
 keeps only recent output, detects prompt-like text, and returns a normalized
 `ApprovalRequest`.
 
-`Telegram bridge` is the remote human approval transport. It sends a message and
-waits for a callback.
+`Telegram approval gateway` is the remote human approval boundary. It sends a
+message and waits on the local broker while the shared dispatcher owns Telegram
+polling.
 
 `User` is the human decision maker. The user's Telegram action becomes a local
 terminal response, not a remote shell command.
@@ -229,8 +235,9 @@ result to the queue worker.
 design point is that policy should not care whether the approval request came
 from terminal text or structured JSON.
 
-`Telegram bridge` is also reusable. It should receive a normalized approval
-request and return a normalized decision.
+`ApprovalDecisionProvider` is also reusable. It receives a normalized approval
+request and returns a normalized decision without exposing transport polling to
+the runner.
 
 `User` remains the human approver.
 
@@ -243,15 +250,15 @@ requested, approval requested, usage limit reached, completed, or failed.
 `EventRunner -> Approval policy` is triggered only by approval-related events
 that contain enough command/context information to classify.
 
-`Approval policy -> Telegram bridge` is triggered when the policy returns
+`Approval policy -> approval provider` is triggered when the policy returns
 `ASK_TELEGRAM`.
 
-`Telegram bridge -> User` sends the same inline-button approval request used in
+`Approval provider -> User` sends the same inline-button approval request used in
 PTY mode.
 
-`User -> Telegram bridge` is triggered by the button callback.
+`User -> Telegram dispatcher` is triggered by the button callback.
 
-`Telegram bridge -> EventRunner` returns the final decision to the event runner.
+`Approval broker -> EventRunner` returns the final decision to the event runner.
 For structured events to fully replace PTY, Codex also needs a response channel
 where the event runner can send that decision back.
 

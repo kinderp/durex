@@ -138,6 +138,7 @@ class QueueLifecycleCharacterizationTests(unittest.TestCase):
             telegram_verbosity="verbose",
             echo_output=False,
             task_service=task_service,
+            approval_provider=None,
         )
         subprocess_run.assert_not_called()
 
@@ -158,6 +159,42 @@ class QueueLifecycleCharacterizationTests(unittest.TestCase):
         stored = self.load_task(task["id"])
         self.assertEqual(stored["status"], "COMPLETED")
         self.assertEqual(stored["output"], "done\n")
+
+    def test_standalone_telegram_pty_uses_dispatcher_runtime(self):
+        """Standalone approval mode must compose a dispatcher-backed provider."""
+
+        task = self.add_task()
+        task_service = codex_queue.get_task_service()
+        provider = mock.Mock()
+        runtime = mock.Mock()
+        runtime.start.return_value = provider
+        result = mock.Mock(returncode=0, output="completed")
+
+        with mock.patch.object(
+            codex_queue,
+            "build_telegram_bridge",
+            return_value=mock.Mock(),
+        ), mock.patch.object(
+            codex_queue,
+            "StandaloneTelegramApprovalRuntime",
+            return_value=runtime,
+        ), mock.patch.object(
+            codex_queue,
+            "run_pty_command",
+            return_value=result,
+        ) as run_pty:
+            codex_queue.run_codex_pty(
+                task,
+                telegram_enabled=True,
+                telegram_verbosity="normal",
+                echo_output=False,
+                task_service=task_service,
+            )
+
+        runtime.start.assert_called_once_with()
+        runtime.close.assert_called_once_with()
+        self.assertIs(run_pty.call_args.kwargs["approval_provider"], provider)
+        self.assertEqual(self.load_task(task.id)["status"], "COMPLETED")
 
 
 class TelegramCheckTests(unittest.TestCase):

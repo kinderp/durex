@@ -270,6 +270,9 @@ sequenceDiagram
     participant Codex as Codex CLI in PTY
     participant Detector as detect_approval_request()
     participant Policy as classify_command()
+    participant Gateway as TelegramApprovalGateway
+    participant Broker as TelegramApprovalBroker
+    participant Dispatcher as TelegramUpdateDispatcher
     participant Telegram as TelegramApprovalBridge
     participant User
     participant DB as SQLite tasks table
@@ -282,10 +285,14 @@ sequenceDiagram
     Detector-->>Pty: ApprovalRequest(command, reason, context)
     Pty->>Policy: classify_command(command)
     Policy-->>Pty: ASK_TELEGRAM
-    Pty->>Telegram: send_approval_request(task, command, context, verbosity)
+    Pty->>Gateway: request_decision(task, command, context, verbosity)
+    Gateway->>Broker: register(one-use token)
+    Gateway->>Telegram: send_approval_request(request)
     Telegram->>User: message with inline buttons
-    User-->>Telegram: approve
-    Telegram-->>Pty: ApprovalDecision(action='approve')
+    User-->>Dispatcher: approve callback
+    Dispatcher->>Broker: resolve_callback(approve)
+    Broker-->>Gateway: ApprovalDecision(action='approve')
+    Gateway-->>Pty: ApprovalDecision(action='approve')
     Pty->>Codex: write 'y' plus newline to PTY stdin
     Codex-->>Pty: continues execution
     Codex-->>Pty: final output and exit status
@@ -308,8 +315,8 @@ normalized approval request when a prompt is detected.
 `classify_command()` decides whether the command should be auto-allowed,
 auto-denied, or sent to Telegram.
 
-`TelegramApprovalBridge` sends the remote approval request and waits for the
-matching callback.
+`TelegramApprovalGateway` registers and sends the remote request, then waits on
+`TelegramApprovalBroker`. `TelegramUpdateDispatcher` is the only callback poller.
 
 `User` decides from the phone.
 
@@ -338,16 +345,17 @@ like an approval prompt.
 `Policy -> Pty: ASK_TELEGRAM` means the local policy cannot safely decide
 without the user.
 
-`Pty -> Telegram: send_approval_request(...)` sends task, command, context, and
-verbosity to the bot.
+`Pty -> Gateway: request_decision(...)` registers a one-use callback token before
+sending task, command, context, and verbosity to the bot.
 
 `Telegram -> User: message with inline buttons` displays approve, deny, show
 context, and stop choices.
 
-`User -> Telegram: approve` is the button callback.
+`User -> Dispatcher: approve` is the button callback returned through the shared
+poll.
 
-`Telegram -> Pty: ApprovalDecision(action='approve')` returns the normalized
-decision after the bridge matches the callback request id.
+`Dispatcher -> Broker -> Gateway -> Pty` returns the normalized decision after
+the dispatcher validates the callback chat, token, and action.
 
 `Pty -> Codex: write 'y' plus newline` answers the terminal prompt.
 
@@ -470,15 +478,19 @@ decision.
 sequenceDiagram
     autonumber
     participant Pty as run_pty_command()
+    participant Gateway as TelegramApprovalGateway
+    participant Broker as TelegramApprovalBroker
     participant Telegram as TelegramApprovalBridge
     participant User
     participant Codex as Codex CLI in PTY
     participant Audit as approval log
 
-    Pty->>Telegram: send_approval_request(request_id, task, command, context)
+    Pty->>Gateway: request_decision(request_id, task, command, context)
+    Gateway->>Broker: register(one-use token)
+    Gateway->>Telegram: send_approval_request(request)
     Telegram->>User: inline keyboard
-    Telegram-->>Pty: no callback received before timeout
-    Pty->>Pty: apply timeout_default_decision
+    Broker-->>Gateway: configured decision after timeout
+    Gateway-->>Pty: decision with source timeout
     alt timeout default is approve
         Pty->>Codex: write 'y' plus newline
         Pty->>Audit: record timeout approval
@@ -493,8 +505,8 @@ sequenceDiagram
 `run_pty_command()` has already sent an approval request and is blocked waiting
 for a final decision.
 
-`TelegramApprovalBridge` polls Telegram updates until a callback arrives or the
-approval timeout expires.
+`TelegramApprovalBroker` waits for the dispatcher to resolve a callback until
+the approval timeout expires. `TelegramApprovalBridge` does not own the wait.
 
 `User` may be unavailable or may ignore the message.
 
@@ -504,12 +516,13 @@ approval timeout expires.
 
 ### Message triggers
 
-`Pty -> Telegram: send_approval_request(...)` starts the waiting period.
+`Pty -> Gateway: request_decision(...)` registers the request and starts the
+waiting period.
 
 `Telegram -> User: inline keyboard` sends the prompt to the configured chat.
 
-`Telegram -> Pty: no callback received before timeout` happens when polling
-does not find a matching callback before the deadline.
+`Broker -> Gateway: configured decision after timeout` happens when no matching
+callback reaches the broker before the deadline.
 
 `Pty -> Pty: apply timeout_default_decision` converts timeout into a final
 decision. This is configured on the bridge and should usually be deny.

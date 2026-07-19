@@ -2,9 +2,9 @@
 
 This document describes the first Telegram remote-control mode for Durex.
 
-Remote control is separate from Telegram approvals. Approval mode only answers
-Codex confirmation prompts. Remote-control mode accepts Telegram messages that
-operate the Durex queue and worker.
+Remote control and Telegram approvals are separate capabilities behind one
+dispatcher. Approval callbacks only answer Codex confirmation prompts.
+Remote-control messages operate the Durex queue and worker.
 
 Remote control is a queue-control channel, not a terminal-control channel. The
 Telegram bot receives commands from one configured chat, turns those commands
@@ -41,6 +41,7 @@ flowchart LR
     User[Telegram user]
     Telegram[Telegram Bot API]
     Bridge[telegram_bridge.py]
+    Dispatcher[telegram_dispatcher.py]
     Control[telegram_control.py]
     Service[TaskApplicationService]
     Queue[(SQLite task queue)]
@@ -48,8 +49,9 @@ flowchart LR
     Runner[Codex runner]
 
     User -->|send text command| Telegram
-    Control -->|long poll getUpdates| Bridge
-    Bridge -->|message updates| Control
+    Dispatcher -->|long poll getUpdates| Bridge
+    Bridge -->|messages and callbacks| Dispatcher
+    Dispatcher -->|control updates| Control
     Control -->|authorized command| Service
     Service -->|repository operation| Queue
     Control -->|/run starts background worker| Worker
@@ -70,8 +72,14 @@ task output tails.
 `Telegram Bot API` is Telegram's HTTP interface. Durex uses it through long
 polling and outbound messages.
 
-`telegram_bridge.py` is the shared Bot API client. In remote-control mode it
-polls only `message` updates and sends plain text responses.
+`telegram_bridge.py` is the shared Bot API client. It performs update requests
+for the dispatcher and sends text, keyboards, callback acknowledgements, and
+download requests.
+
+`telegram_dispatcher.py` owns the only runtime polling loop. In remote-control
+mode it requests both `message` and `callback_query` updates, routes approval
+callbacks to the broker, and routes all other supported updates to the control
+bot.
 
 `telegram_control.py` is the command router. It verifies the chat id, parses the
 message text, calls the injected task service or worker operation, catches
@@ -96,11 +104,13 @@ configuration it can use the subprocess runner or the PTY runner.
 `Telegram user -> Telegram Bot API` is triggered when the user sends a command
 such as `/status`, `/tasks`, `/add`, `/run`, `/tail`, or `/stop`.
 
-`telegram_control.py -> telegram_bridge.py` with `long poll getUpdates` is
-triggered continuously by `run_forever()`.
+`telegram_dispatcher.py -> telegram_bridge.py` with `long poll getUpdates` is
+triggered continuously after `TelegramControlBot.run_forever()` delegates to the
+dispatcher.
 
-`telegram_bridge.py -> telegram_control.py` is triggered when Telegram returns
-message updates from the Bot API.
+`telegram_bridge.py -> telegram_dispatcher.py -> telegram_control.py` is
+triggered when Telegram returns an authorized command message or a non-approval
+callback from the Bot API.
 
 `telegram_control.py -> TaskApplicationService -> SQLite task queue` is triggered
 by commands that read or modify queue state, including `/status`, `/tasks`,
@@ -232,14 +242,16 @@ For a full first-use checklist and a smoke test that exercises `/status`,
 sequenceDiagram
     participant User as Telegram user
     participant API as Telegram Bot API
+    participant Dispatcher as TelegramUpdateDispatcher
     participant Bot as TelegramControlBot
     participant Router as Command router
     participant Queue as SQLite queue
     participant Worker as Worker state
 
     User->>API: send command message
-    Bot->>API: poll_updates(allowed_updates=["message"])
-    API-->>Bot: message update
+    Dispatcher->>API: poll_updates(message, callback_query)
+    API-->>Dispatcher: message update
+    Dispatcher->>Bot: route control update
     Bot->>Bot: verify chat id
     alt unauthorized chat
         Bot-->>API: no response
@@ -263,8 +275,9 @@ sequenceDiagram
 `Telegram Bot API` stores incoming messages until Durex retrieves them with
 `getUpdates`.
 
-`TelegramControlBot` is the daemon object. It owns the polling loop, authorized
-chat check, response sending, retry state, and background worker state.
+`TelegramUpdateDispatcher` owns polling, callback namespace routing, transport
+retry, and dispatch isolation. `TelegramControlBot` owns the authorized chat
+check, command responses, and background worker state.
 
 `Command router` is `handle_text()`. It recognizes the supported commands and
 dispatches them to queue or worker operations.
@@ -280,11 +293,13 @@ what the last worker error was.
 `User -> API: send command message` is triggered by the operator sending a bot
 command from Telegram.
 
-`Bot -> API: poll_updates(...)` is triggered by the daemon polling loop. Remote
-control asks only for `message` updates, not callback queries.
+`Dispatcher -> API: poll_updates(...)` is triggered by the daemon polling loop.
+Remote control asks for both `message` and `callback_query` updates so commands,
+wizard buttons, and PTY approval buttons share one update stream.
 
-`API -> Bot: message update` is triggered when Telegram has one or more messages
-available for the bot token.
+`API -> Dispatcher -> Bot: message update` is triggered when Telegram has a
+control update available for the bot token. Approval callbacks are routed to the
+broker instead of the command bot.
 
 `Bot -> Bot: verify chat id` is triggered for every message update. Messages
 from any chat other than `DUREX_TELEGRAM_CHAT_ID` are ignored.
@@ -465,8 +480,8 @@ python3 codex_queue.py telegram-control --runner-mode subprocess
 python3 codex_queue.py telegram-control --runner-mode pty
 ```
 
-Telegram approval prompts inside remotely started worker tasks are not supported
-yet:
+Telegram approval prompts inside remotely started PTY tasks use the same update
+dispatcher as remote-control commands:
 
 ```bash
 python3 codex_queue.py telegram-control \
@@ -474,11 +489,22 @@ python3 codex_queue.py telegram-control \
   --worker-telegram-approvals
 ```
 
-The command rejects this combination because remote control and approval prompts
-would otherwise create competing Telegram `getUpdates` consumers for the same
-bot token. A future implementation should use one shared Telegram update
-dispatcher that routes message commands and callback-query approvals from a
-single polling loop.
+`TelegramUpdateDispatcher` is the only `getUpdates` owner in the process. It
+routes normal commands and control callbacks to `TelegramControlBot`, while the
+reserved `durex:<token>:<action>` namespace resolves the worker's pending
+approval through `TelegramApprovalBroker`. See
+[TELEGRAM_UPDATE_DISPATCHER.md](TELEGRAM_UPDATE_DISPATCHER.md) for ownership,
+idempotency, callback namespaces, and failure behavior.
+
+Do not run another Durex polling process with the same bot token. In particular,
+stop `telegram-control` before using `telegram-check --discover-chat-id` or
+standalone `run --telegram` with that token.
+
+Standalone `run --telegram` is approval-only. Do not send `/status`, `/add`,
+`/run`, or other control commands while standalone mode owns the token; Telegram
+does not guarantee those filtered updates will remain available for a later
+daemon. Use `telegram-control --worker-telegram-approvals` when the phone must
+provide both queue commands and approval decisions.
 
 ## Security Boundaries
 
@@ -495,8 +521,8 @@ Codex control, command authorization, hard process stops and arbitrary input.
 
 ## Implementation Notes
 
-The remote-control daemon uses Telegram long polling for `message` updates. It
-shares the same Bot API client class as Telegram approvals, but command routing
-lives in `telegram_control.py`.
+The remote-control daemon delegates long polling for `message` and
+`callback_query` updates to `TelegramUpdateDispatcher`. Command routing remains
+in `telegram_control.py`; approval callbacks are resolved by the shared broker.
 
 The command router is tested without network access using a fake bridge.

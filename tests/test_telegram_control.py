@@ -315,6 +315,41 @@ class TelegramControlTests(unittest.TestCase):
             ],
         )
 
+    def test_worker_passes_shared_approval_provider_to_runner(self):
+        """Control workers must reuse the dispatcher-backed approval provider."""
+
+        task_service = codex_queue.get_task_service()
+        task_service.add_task(
+            title="Approval worker",
+            prompt="Request an approval.",
+            workdir=self.tmp.name,
+            priority=1,
+            max_attempts=1,
+        )
+        state = WorkerState()
+        config = TelegramControlConfig(
+            allowed_workdirs=[self.tmp.name],
+            runner_mode="pty",
+            worker_telegram_approvals=True,
+        )
+        provider = mock.Mock()
+        captured = []
+
+        def complete_task(task, **kwargs):
+            captured.append(kwargs["approval_provider"])
+            task_service.update_task(task.id, status="COMPLETED", output="done")
+
+        with mock.patch.object(codex_queue, "run_task", side_effect=complete_task):
+            run_worker_until_empty(
+                state,
+                config,
+                lambda _message: None,
+                task_service,
+                provider,
+            )
+
+        self.assertEqual(captured, [provider])
+
     def test_handle_add_message_rejects_disallowed_workdir(self):
         """Remote users must not enqueue tasks outside allowed workdir roots."""
 
@@ -1458,16 +1493,19 @@ class TelegramControlTests(unittest.TestCase):
         self.assertIn("en: status -> status", response)
         self.assertIn("Durex status", response)
 
-    def test_worker_telegram_approvals_are_rejected_for_control_mode(self):
-        """Control mode must reject competing Telegram getUpdates consumers."""
+    def test_worker_telegram_approvals_use_control_dispatcher(self):
+        """Control mode must inject one broker without creating another poller."""
 
         with mock.patch.dict(
             os.environ,
             {"DUREX_TELEGRAM_BOT_TOKEN": "token", "DUREX_TELEGRAM_CHAT_ID": "123"},
             clear=True,
         ):
-            with self.assertRaises(TelegramBridgeError):
-                TelegramControlBot.from_env(worker_telegram_approvals=True)
+            bot = TelegramControlBot.from_env(worker_telegram_approvals=True)
+
+        self.assertIsNotNone(bot.approval_provider)
+        self.assertIs(bot.update_dispatcher.transport, bot.bridge)
+        self.assertIs(bot.update_dispatcher.approval_broker, bot.approval_broker)
 
     def test_run_forever_retries_after_temporary_poll_error(self):
         """Transient Telegram polling errors should not kill the daemon loop."""

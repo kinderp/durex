@@ -234,7 +234,7 @@ Useful options:
 | `--runner-mode subprocess` | Runner used when Telegram `/run` starts the worker |
 | `--runner-mode pty` | Default remote-control runner |
 | `--echo-output` | Mirror worker PTY output locally |
-| `--worker-telegram-approvals` | Reserved for future shared dispatcher; currently rejected |
+| `--worker-telegram-approvals` | Route PTY approvals through the control daemon's shared dispatcher |
 
 Remote control uses Telegram text commands, not shell input. It can operate the
 queue, but it cannot type arbitrary commands into Codex.
@@ -453,10 +453,12 @@ Telegram.
 
 Telegram remote control lets you operate the Durex queue from your phone.
 
-It is separate from Telegram approvals:
+Its actions remain separate from Telegram approvals:
 
 - approvals answer Codex prompts;
 - remote control sends queue commands to Durex.
+
+Both can run through one daemon and one bot update stream.
 
 ### 1. Configure Telegram
 
@@ -475,6 +477,18 @@ Allow one project root:
 ```bash
 python3 codex_queue.py telegram-control --allowed-workdir /path/to/projects
 ```
+
+Enable remote PTY approvals in the same daemon:
+
+```bash
+python3 codex_queue.py telegram-control \
+  --allowed-workdir /path/to/projects \
+  --runner-mode pty \
+  --worker-telegram-approvals
+```
+
+Do not run another Durex `getUpdates` process with the same bot token while this
+daemon is active.
 
 Allow multiple roots:
 
@@ -531,7 +545,8 @@ Request a graceful stop:
 `/stop` does not forcibly kill the current Codex process. It asks the background
 worker to stop before starting another task.
 
-Details: [TELEGRAM_REMOTE_CONTROL.md](TELEGRAM_REMOTE_CONTROL.md)
+Details: [TELEGRAM_REMOTE_CONTROL.md](TELEGRAM_REMOTE_CONTROL.md) and
+[TELEGRAM_UPDATE_DISPATCHER.md](TELEGRAM_UPDATE_DISPATCHER.md).
 
 ### Voice commands
 

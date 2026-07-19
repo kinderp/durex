@@ -31,6 +31,12 @@ from telegram_bridge import (
     TelegramBridgeConfig,
     TelegramBridgeError,
 )
+from telegram_dispatcher import (
+    ApprovalDecisionProvider,
+    TelegramApprovalBroker,
+    TelegramApprovalGateway,
+    TelegramUpdateDispatcher,
+)
 from voice_commands import ALIASABLE_ACTIONS, VoiceCommand, VoiceCommandError, normalize_transcript, parse_voice_command
 from voice_transcriber import VoiceTranscriber, VoiceTranscriptionError, build_voice_transcriber
 
@@ -101,10 +107,9 @@ class TelegramControlConfig:
         runner_mode:
             Worker backend started by ``/run``.
         worker_telegram_approvals:
-            Reserved flag for future shared update dispatching.
+            Whether PTY worker approvals use the shared Telegram dispatcher.
         telegram_verbosity:
-            Approval verbosity that will be passed to the worker once shared
-            Telegram approvals are supported.
+            Approval verbosity passed to a Telegram-enabled PTY worker.
         echo_output:
             Whether PTY output should also be printed locally.
         poll_timeout_seconds:
@@ -1000,6 +1005,7 @@ def run_worker_until_empty(
     config: TelegramControlConfig,
     notify: Callable[[str], None],
     task_service: Optional[TaskApplicationService] = None,
+    approval_provider: Optional[ApprovalDecisionProvider] = None,
 ) -> None:
     """
     Run ready queue tasks in a background thread until no task is runnable.
@@ -1013,6 +1019,8 @@ def run_worker_until_empty(
             Callback used to send status messages back to Telegram.
         task_service:
             Persistence boundary shared by task selection and execution.
+        approval_provider:
+            Shared broker-backed decision provider for PTY approvals.
 
     Returns:
         None. Worker completion or errors are reported through ``notify`` and
@@ -1042,6 +1050,7 @@ def run_worker_until_empty(
                 telegram_verbosity=config.telegram_verbosity,
                 echo_output=config.echo_output,
                 task_service=tasks,
+                approval_provider=approval_provider,
             )
     except Exception as exc:
         with state.lock:
@@ -1117,6 +1126,24 @@ class TelegramControlBot:
         self.clock = clock
         self.task_service = task_service or codex_queue.get_task_service()
         self.worker_state = WorkerState()
+        self.approval_broker = TelegramApprovalBroker()
+        self.approval_provider: Optional[ApprovalDecisionProvider] = None
+        if self.config.worker_telegram_approvals:
+            self.approval_provider = TelegramApprovalGateway(
+                transport=self.bridge,
+                broker=self.approval_broker,
+                timeout_seconds=self.bridge.config.approval_timeout_seconds,
+                timeout_default=self.bridge.config.timeout_default_decision,
+            )
+        self.update_dispatcher = TelegramUpdateDispatcher(
+            transport=self.bridge,
+            approval_broker=self.approval_broker,
+            update_handler=self.handle_update,
+            poll_timeout_seconds=self.config.poll_timeout_seconds,
+            retry_base_seconds=self.config.retry_base_seconds,
+            retry_max_seconds=self.config.retry_max_seconds,
+            on_poll_error=self.record_poll_error,
+        )
         self.pending_voice_learns: dict[str, PendingVoiceLearn] = {}
         self.next_reply_markup: Optional[dict] = None
         self.add_wizards: dict[str, AddWizardState] = {}
@@ -1142,9 +1169,9 @@ class TelegramControlBot:
             runner_mode:
                 Worker backend used by remote ``/run``.
             worker_telegram_approvals:
-                Reserved flag rejected until Telegram update dispatch is shared.
+                Whether PTY approvals use the control process dispatcher.
             telegram_verbosity:
-                Future worker approval verbosity.
+                Worker approval message verbosity.
             echo_output:
                 Whether worker PTY output is mirrored locally.
 
@@ -1153,8 +1180,7 @@ class TelegramControlBot:
 
         Raises:
             TelegramBridgeError:
-                Raised when required environment variables are missing or when
-                unsupported shared Telegram approval mode is requested.
+                Raised when required environment variables are missing.
         """
 
         token = os.environ.get("DUREX_TELEGRAM_BOT_TOKEN")
@@ -1163,12 +1189,6 @@ class TelegramControlBot:
             raise TelegramBridgeError("Missing DUREX_TELEGRAM_BOT_TOKEN.")
         if not chat_id:
             raise TelegramBridgeError("Missing DUREX_TELEGRAM_CHAT_ID.")
-        if worker_telegram_approvals:
-            raise TelegramBridgeError(
-                "--worker-telegram-approvals is not supported with telegram-control yet. "
-                "It would create competing Telegram getUpdates consumers."
-            )
-
         config_file = os.environ.get("DUREX_CONFIG", DEFAULT_CONFIG_FILE)
         file_config = load_yaml_config(config_file)
         control_config = file_config.get("telegram_control", {}) if isinstance(file_config.get("telegram_control"), dict) else {}
@@ -1291,6 +1311,12 @@ class TelegramControlBot:
         """
 
         self.bridge.send_message(truncate_message(text), reply_markup=reply_markup)
+
+    def record_poll_error(self, error: TelegramBridgeError) -> None:
+        """Expose the latest dispatcher transport failure through ``/status``."""
+
+        with self.worker_state.lock:
+            self.worker_state.last_error = str(error)
 
     def build_voice_learn_keyboard(self, phrase: str) -> dict:
         """
@@ -1508,7 +1534,13 @@ class TelegramControlBot:
             self.worker_state.stop_after_current = False
             thread = threading.Thread(
                 target=run_worker_until_empty,
-                args=(self.worker_state, self.config, self.send, self.task_service),
+                args=(
+                    self.worker_state,
+                    self.config,
+                    self.send,
+                    self.task_service,
+                    self.approval_provider,
+                ),
                 daemon=True,
             )
             self.worker_state.thread = thread
@@ -2171,21 +2203,7 @@ class TelegramControlBot:
         """
 
         self.send("Durex Telegram control is online. Send /help.")
-        retry_delay = self.config.retry_base_seconds
-        while True:
-            try:
-                updates = self.bridge.poll_updates(
-                    timeout=self.config.poll_timeout_seconds,
-                    allowed_updates=["message", "callback_query"],
-                )
-                retry_delay = self.config.retry_base_seconds
-                for update in updates:
-                    self.handle_update(update)
-            except TelegramBridgeError as exc:
-                with self.worker_state.lock:
-                    self.worker_state.last_error = str(exc)
-                time.sleep(retry_delay)
-                retry_delay = min(retry_delay * 2, self.config.retry_max_seconds)
+        self.update_dispatcher.run_forever()
 
 
 HELP_TEXT = """Durex Telegram control

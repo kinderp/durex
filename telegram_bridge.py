@@ -29,14 +29,17 @@ Codex's terminal input.
 
 Transport model
 ---------------
-The first implementation uses long polling through getUpdates. This is easier
-for local usage than webhooks because it does not require a public HTTPS server.
+Durex uses long polling through getUpdates. A process-level dispatcher owns the
+poll loop; this client performs each requested Bot API call. Long polling is
+easier for local usage than webhooks because it does not require a public HTTPS
+server.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
+from http import client
 import json
 import os
 from pathlib import Path
@@ -47,6 +50,10 @@ from urllib import parse, request, error
 
 DEFAULT_TELEGRAM_FILE_MAX_BYTES = 10 * 1024 * 1024
 TELEGRAM_FILE_CHUNK_BYTES = 64 * 1024
+DEFAULT_TELEGRAM_API_TIMEOUT_SECONDS = 30
+TELEGRAM_MESSAGE_MAX_CHARS = 4096
+TELEGRAM_CONTEXT_HEADER_MAX_CHARS = 1024
+TELEGRAM_TRUNCATION_MARKER = "\n...[truncated]"
 
 
 class TelegramDecisionAction(str, Enum):
@@ -84,7 +91,9 @@ class TelegramApprovalRequest:
 
     Attributes:
         request_id:
-            Detector fingerprint used to correlate callbacks.
+            Stable detector fingerprint in the runner-facing request. The
+            approval gateway replaces it with a one-use callback token in the
+            wire copy passed to this transport.
         task_id:
             Queue task id, if the request came from codex_queue.py.
         task_title:
@@ -117,7 +126,7 @@ class TelegramApprovalRequest:
 @dataclass(frozen=True)
 class TelegramApprovalDecision:
     """
-    Decision returned by TelegramApprovalBridge.wait_for_decision().
+    Decision returned by a broker-backed approval provider.
 
     Attributes:
         request_id:
@@ -181,6 +190,26 @@ class TelegramBridgeError(RuntimeError):
     """
 
 
+def truncate_telegram_text(
+    text: str,
+    max_chars: int = TELEGRAM_MESSAGE_MAX_CHARS,
+    preserve_tail: bool = False,
+) -> str:
+    """Bound Bot API text with a visible marker and optional tail retention."""
+
+    if max_chars < 1:
+        raise ValueError("max_chars must be positive")
+    if len(text) <= max_chars:
+        return text
+    if max_chars <= len(TELEGRAM_TRUNCATION_MARKER):
+        return text[-max_chars:] if preserve_tail else text[:max_chars]
+
+    content_chars = max_chars - len(TELEGRAM_TRUNCATION_MARKER)
+    if preserve_tail:
+        return TELEGRAM_TRUNCATION_MARKER + text[-content_chars:]
+    return text[:content_chars] + TELEGRAM_TRUNCATION_MARKER
+
+
 def extract_chat_ids_from_updates(updates: list[dict[str, Any]]) -> list[int]:
     """
     Return unique Telegram chat ids found in getUpdates payloads.
@@ -224,13 +253,10 @@ class TelegramApprovalBridge:
     """
     Small Telegram Bot API client for approval requests.
 
-    The bridge exposes a deliberately small interface:
-
-        send_approval_request(request) -> message_id
-        wait_for_decision(request) -> TelegramApprovalDecision
-
-    The PTY runner can call those methods whenever the policy returns
-    ASK_TELEGRAM.
+    The bridge owns Bot API calls, message rendering, and update offsets. A
+    process-level ``TelegramUpdateDispatcher`` is the only runtime component
+    allowed to call ``poll_updates``. PTY runners wait on the separate approval
+    broker contract and never poll this transport directly.
     """
 
     def __init__(self, config: TelegramBridgeConfig) -> None:
@@ -334,7 +360,12 @@ class TelegramApprovalBridge:
 
         return f"{self.config.api_base}/file/bot{self.config.bot_token}/{file_path}"
 
-    def api_call(self, method: str, payload: dict[str, Any]) -> dict[str, Any]:
+    def api_call(
+        self,
+        method: str,
+        payload: dict[str, Any],
+        request_timeout: float = DEFAULT_TELEGRAM_API_TIMEOUT_SECONDS,
+    ) -> dict[str, Any]:
         """
         Call one Telegram Bot API method using JSON POST.
 
@@ -343,6 +374,9 @@ class TelegramApprovalBridge:
                 Telegram Bot API method name.
             payload:
                 JSON-serializable request payload.
+            request_timeout:
+                HTTP socket timeout. Long polling supplies a value derived from
+                its Bot API timeout so dispatcher shutdown remains bounded.
 
         Returns:
             Decoded Telegram response dictionary.
@@ -362,12 +396,18 @@ class TelegramApprovalBridge:
         )
 
         try:
-            with request.urlopen(req, timeout=30) as response:
+            with request.urlopen(req, timeout=request_timeout) as response:
                 data = json.loads(response.read().decode("utf-8"))
-        except error.URLError as exc:
+        except (error.URLError, OSError, client.HTTPException) as exc:
             raise TelegramBridgeError(f"Telegram API request failed: {exc}") from exc
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise TelegramBridgeError(f"Telegram API returned malformed JSON: {exc}") from exc
 
-        if not data.get("ok"):
+        if not isinstance(data, dict):
+            raise TelegramBridgeError(
+                f"Telegram API returned a non-object response: {type(data).__name__}"
+            )
+        if data.get("ok") is not True:
             raise TelegramBridgeError(f"Telegram API returned an error: {data}")
 
         return data
@@ -511,7 +551,7 @@ class TelegramApprovalBridge:
             f"Approve this action?"
         )
 
-    def build_inline_keyboard(self, request_id: str) -> dict[str, Any]:
+    def build_inline_keyboard(self, callback_token: str) -> dict[str, Any]:
         """
         Build Telegram inline keyboard payload.
 
@@ -519,8 +559,8 @@ class TelegramApprovalBridge:
         data length.
 
         Args:
-            request_id:
-                Approval request fingerprint embedded into callback data.
+            callback_token:
+                One-use approval token embedded into callback data.
 
         Returns:
             Telegram ``reply_markup`` payload with approval actions.
@@ -529,12 +569,12 @@ class TelegramApprovalBridge:
         return {
             "inline_keyboard": [
                 [
-                    {"text": "Approve", "callback_data": f"durex:{request_id}:approve"},
-                    {"text": "Deny", "callback_data": f"durex:{request_id}:deny"},
+                    {"text": "Approve", "callback_data": f"durex:{callback_token}:approve"},
+                    {"text": "Deny", "callback_data": f"durex:{callback_token}:deny"},
                 ],
                 [
-                    {"text": "Show context", "callback_data": f"durex:{request_id}:show_context"},
-                    {"text": "Stop task", "callback_data": f"durex:{request_id}:stop"},
+                    {"text": "Show context", "callback_data": f"durex:{callback_token}:show_context"},
+                    {"text": "Stop task", "callback_data": f"durex:{callback_token}:stop"},
                 ],
             ]
         }
@@ -559,13 +599,19 @@ class TelegramApprovalBridge:
 
         payload: dict[str, Any] = {
             "chat_id": self.config.allowed_chat_id,
-            "text": text,
+            "text": truncate_telegram_text(text),
         }
         if reply_markup is not None:
             payload["reply_markup"] = reply_markup
 
         data = self.api_call("sendMessage", payload)
-        return int(data["result"]["message_id"])
+        result = data.get("result")
+        if not isinstance(result, dict):
+            raise TelegramBridgeError("Telegram sendMessage returned an invalid result.")
+        message_id = result.get("message_id")
+        if isinstance(message_id, bool) or not isinstance(message_id, int):
+            raise TelegramBridgeError("Telegram sendMessage returned an invalid message id.")
+        return message_id
 
     def send_approval_request(self, approval: TelegramApprovalRequest) -> int:
         """
@@ -596,12 +642,23 @@ class TelegramApprovalBridge:
             None.
         """
 
-        text = (
+        header = (
             f"Context for request {approval.request_id}\n\n"
             f"Task: {approval.task_title}\n"
             f"Directory: {approval.workdir}\n\n"
-            f"Terminal context:\n{approval.context}"
+            f"Terminal context:"
         )
+        bounded_header = truncate_telegram_text(
+            header,
+            max_chars=TELEGRAM_CONTEXT_HEADER_MAX_CHARS,
+        )
+        context_budget = TELEGRAM_MESSAGE_MAX_CHARS - len(bounded_header) - 1
+        bounded_context = truncate_telegram_text(
+            approval.context,
+            max_chars=context_budget,
+            preserve_tail=True,
+        )
+        text = f"{bounded_header}\n{bounded_context}"
         self.send_message(text=text)
 
     def answer_callback_query(self, callback_query_id: str, text: str = "") -> None:
@@ -650,13 +707,26 @@ class TelegramApprovalBridge:
         if self._last_update_id is not None:
             payload["offset"] = self._last_update_id + 1
 
-        data = self.api_call("getUpdates", payload)
-        updates = data.get("result", [])
+        data = self.api_call("getUpdates", payload, request_timeout=max(1, timeout) + 5)
+        updates = data.get("result")
+        if not isinstance(updates, list):
+            raise TelegramBridgeError("Telegram getUpdates returned an invalid update list.")
 
+        last_update_id = self._last_update_id
         for update in updates:
+            if not isinstance(update, dict):
+                raise TelegramBridgeError("Telegram getUpdates returned an invalid update list.")
             update_id = update.get("update_id")
-            if isinstance(update_id, int):
-                self._last_update_id = update_id
+            if (
+                isinstance(update_id, bool)
+                or not isinstance(update_id, int)
+                or (last_update_id is not None and update_id <= last_update_id)
+            ):
+                raise TelegramBridgeError("Telegram getUpdates returned invalid update ids.")
+            last_update_id = update_id
+
+        if updates:
+            self._last_update_id = last_update_id
 
         return updates
 
@@ -675,95 +745,6 @@ class TelegramApprovalBridge:
         return extract_chat_ids_from_updates(
             self.poll_updates(timeout=timeout, allowed_updates=["message", "callback_query"])
         )
-
-    def parse_callback(self, update: dict[str, Any], expected_request_id: str) -> Optional[TelegramApprovalDecision]:
-        """
-        Convert one Telegram callback update into an approval decision.
-
-        The callback must:
-        - come from the allowed chat id;
-        - use callback_data format durex:request_id:action;
-        - refer to the expected request id.
-
-        Args:
-            update:
-                Raw Telegram update dictionary.
-            expected_request_id:
-                Request id currently waiting for a decision.
-
-        Returns:
-            TelegramApprovalDecision when the update is a valid matching
-            callback, otherwise None.
-        """
-
-        callback = update.get("callback_query")
-        if not callback:
-            return None
-
-        message = callback.get("message", {})
-        chat = message.get("chat", {})
-        chat_id = chat.get("id")
-
-        if int(chat_id) != self.config.allowed_chat_id:
-            return None
-
-        data = callback.get("data", "")
-        parts = data.split(":")
-        if len(parts) != 3 or parts[0] != "durex":
-            return None
-
-        _, request_id, action_text = parts
-        if request_id != expected_request_id:
-            return None
-
-        try:
-            action = TelegramDecisionAction(action_text)
-        except ValueError:
-            return None
-
-        self.answer_callback_query(callback.get("id", ""), text=f"Durex: {action.value}")
-
-        user = callback.get("from", {})
-        return TelegramApprovalDecision(
-            request_id=request_id,
-            action=action,
-            source="telegram",
-            telegram_user_id=user.get("id"),
-            telegram_message_id=message.get("message_id"),
-        )
-
-    def wait_for_decision(self, approval: TelegramApprovalRequest) -> TelegramApprovalDecision:
-        """
-        Wait until the user decides or the approval timeout expires.
-
-        Show context is handled inside this loop. It does not finish the
-        approval request; after sending context, the bridge keeps waiting for an
-        approve, deny or stop decision.
-        """
-
-        deadline = time.time() + self.config.approval_timeout_seconds
-
-        while time.time() < deadline:
-            remaining = max(1, int(deadline - time.time()))
-            poll_timeout = min(20, remaining)
-
-            for update in self.poll_updates(timeout=poll_timeout):
-                decision = self.parse_callback(update, expected_request_id=approval.request_id)
-                if decision is None:
-                    continue
-
-                if decision.action == TelegramDecisionAction.SHOW_CONTEXT:
-                    self.send_context(approval)
-                    continue
-
-                return decision
-
-        return TelegramApprovalDecision(
-            request_id=approval.request_id,
-            action=self.config.timeout_default_decision,
-            source="timeout",
-        )
-
 
 def _demo() -> None:
     """
@@ -792,10 +773,14 @@ def _demo() -> None:
         verbosity="normal",
     )
 
-    message_id = bridge.send_approval_request(approval)
-    print(f"Sent approval request message_id={message_id}")
-    decision = bridge.wait_for_decision(approval)
-    print(decision)
+    from telegram_dispatcher import StandaloneTelegramApprovalRuntime
+
+    runtime = StandaloneTelegramApprovalRuntime(bridge)
+    gateway = runtime.start()
+    try:
+        print(gateway.request_decision(approval))
+    finally:
+        runtime.close()
 
 
 if __name__ == "__main__":
