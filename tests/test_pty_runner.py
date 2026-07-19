@@ -39,6 +39,19 @@ class StaticApprovalProvider:
         )
 
 
+class CancellationAwareApprovalProvider:
+    """Decision double that requires the runner cancellation context."""
+
+    def request_decision(self, approval, cancellation=None):
+        if cancellation is None or not cancellation.wait(1.0):
+            raise AssertionError("approval wait did not receive cancellation")
+        return TelegramApprovalDecision(
+            request_id=approval.request_id,
+            action=TelegramDecisionAction.STOP,
+            source="cancellation",
+        )
+
+
 class PtyRunnerApprovalTests(unittest.TestCase):
     """Regression coverage for the PTY approval loop contract."""
 
@@ -153,6 +166,37 @@ class PtyRunnerApprovalTests(unittest.TestCase):
         self.assertEqual(result.lifecycle, RunnerLifecycle.CANCELLED)
         self.assertEqual(lifecycle[-1].state, RunnerLifecycle.CANCELLED)
         self.assertEqual(lifecycle[-1].detail, "remote operator")
+
+    def test_external_cancellation_releases_pending_approval(self):
+        """A remote stop must not wait for the Telegram approval timeout."""
+
+        cancellation = RunCancellation()
+        events = []
+
+        def consume(event):
+            events.append(event)
+            if (
+                isinstance(event, RunnerInteractionEvent)
+                and event.state == RunnerInteractionState.REQUESTED
+            ):
+                cancellation.request("remote operator")
+
+        result = run_pty_command(
+            cmd=[
+                sys.executable,
+                "-c",
+                "input('Command: git push\\nApprove this command? [y/N] ')",
+            ],
+            policy=default_policy(),
+            approval_provider=CancellationAwareApprovalProvider(),
+            config=PtyRunnerConfig(echo_output=False),
+            event_sink=consume,
+            cancellation=cancellation,
+        )
+
+        lifecycle = [event for event in events if isinstance(event, RunnerLifecycleEvent)]
+        self.assertEqual(result.lifecycle, RunnerLifecycle.CANCELLED)
+        self.assertEqual(lifecycle[-1].state, RunnerLifecycle.CANCELLED)
 
     def test_post_exit_drain_has_total_deadline(self):
         """Continuous descendant output must not keep a completed task alive."""

@@ -8,8 +8,10 @@ from dataclasses import dataclass, field, replace
 from enum import Enum
 import secrets
 import threading
+import time
 from typing import Callable, Optional, Protocol
 
+from process_control import RunCancellation
 from runtime_contracts import TelegramTransport, TelegramTransportConfig
 from telegram_bridge import (
     DEFAULT_TELEGRAM_API_TIMEOUT_SECONDS,
@@ -37,7 +39,11 @@ _standalone_dispatcher_lock = threading.Lock()
 class ApprovalDecisionProvider(Protocol):
     """Decision boundary consumed by the PTY runner."""
 
-    def request_decision(self, approval: TelegramApprovalRequest) -> TelegramApprovalDecision:
+    def request_decision(
+        self,
+        approval: TelegramApprovalRequest,
+        cancellation: Optional[RunCancellation] = None,
+    ) -> TelegramApprovalDecision:
         """Publish one request and wait for a final human decision."""
 
 
@@ -180,7 +186,12 @@ class TelegramApprovalBroker:
                 approval=pending.approval,
             )
 
-    def wait_for_decision(self, request_id: str, timeout_seconds: float) -> TelegramApprovalDecision:
+    def wait_for_decision(
+        self,
+        request_id: str,
+        timeout_seconds: float,
+        cancellation: Optional[RunCancellation] = None,
+    ) -> TelegramApprovalDecision:
         """Wait for a final callback or apply the request's conservative timeout."""
 
         with self._lock:
@@ -188,7 +199,23 @@ class TelegramApprovalBroker:
             if pending is None:
                 raise TelegramBridgeError(f"Telegram approval request is not pending: {request_id}")
 
-        pending.event.wait(max(0.0, timeout_seconds))
+        deadline = time.monotonic() + max(0.0, timeout_seconds)
+        while not pending.event.is_set():
+            if cancellation is not None and cancellation.requested:
+                with self._lock:
+                    current = self._pending.get(request_id)
+                    if current is pending and pending.decision is None:
+                        pending.decision = TelegramApprovalDecision(
+                            request_id=request_id,
+                            action=TelegramDecisionAction.STOP,
+                            source="cancellation",
+                        )
+                        pending.event.set()
+                break
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            pending.event.wait(min(remaining, 0.1))
 
         with self._lock:
             current = self._pending.get(request_id)
@@ -249,7 +276,11 @@ class TelegramApprovalGateway:
         self.timeout_default = timeout_default
         self.token_factory = token_factory
 
-    def request_decision(self, approval: TelegramApprovalRequest) -> TelegramApprovalDecision:
+    def request_decision(
+        self,
+        approval: TelegramApprovalRequest,
+        cancellation: Optional[RunCancellation] = None,
+    ) -> TelegramApprovalDecision:
         """Register, publish, and await one uniquely correlated approval."""
 
         callback_token = self.token_factory()
@@ -263,7 +294,11 @@ class TelegramApprovalGateway:
             self.broker.cancel(callback_token)
             raise
 
-        decision = self.broker.wait_for_decision(callback_token, self.timeout_seconds)
+        decision = self.broker.wait_for_decision(
+            callback_token,
+            self.timeout_seconds,
+            cancellation=cancellation,
+        )
         return replace(decision, request_id=approval.request_id)
 
 

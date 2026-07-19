@@ -5,6 +5,7 @@ Tests for Telegram remote control command routing.
 import tempfile
 from pathlib import Path
 import os
+import threading
 import unittest
 from unittest import mock
 
@@ -299,9 +300,10 @@ class TelegramControlTests(unittest.TestCase):
         notifications = []
 
         def complete_subprocess(
-            _cmd, *, task_id, cwd, event_sink, run_id
+            _cmd, *, task_id, cwd, event_sink, run_id, cancellation
         ):
             self.assertEqual(cwd, self.tmp.name)
+            self.assertFalse(cancellation.requested)
             emitter = RunnerEventEmitter(task_id, event_sink, run_id)
             emitter.lifecycle(RunnerLifecycle.STARTED)
             emitter.output("worker done")
@@ -366,6 +368,39 @@ class TelegramControlTests(unittest.TestCase):
             )
 
         self.assertEqual(captured, [provider])
+
+    def test_status_and_stop_current_use_supervisor_owned_claim(self):
+        """Telegram exposes current-run state and cancels only that run."""
+
+        task_service = codex_queue.get_task_service()
+        task_id = task_service.add_task(
+            title="Remote cancellation",
+            prompt="Wait for cancellation.",
+            workdir=self.tmp.name,
+            max_attempts=1,
+        )
+        bot = TelegramControlBot(
+            bridge=FakeBridge(),
+            config=TelegramControlConfig(allowed_workdirs=[self.tmp.name]),
+            task_service=task_service,
+        )
+        executing = threading.Event()
+
+        def wait_for_stop(_task, **kwargs):
+            executing.set()
+            self.assertTrue(kwargs["cancellation"].wait(2.0))
+
+        with mock.patch.object(codex_queue, "run_task", side_effect=wait_for_stop):
+            self.assertEqual(bot.start_worker(), "Worker started.")
+            self.assertTrue(executing.wait(2.0))
+            status = bot.handle_text("/status")
+            response = bot.handle_text("/stop-current")
+            bot.supervisor._thread.join(timeout=2.0)
+
+        self.assertIn(f"Current task: #{task_id}", status)
+        self.assertIn("Run:", status)
+        self.assertEqual(response, "Current task cancellation requested.")
+        self.assertEqual(task_service.task_detail(task_id).status, "CANCELLED")
 
     def test_handle_add_message_rejects_disallowed_workdir(self):
         """Remote users must not enqueue tasks outside allowed workdir roots."""

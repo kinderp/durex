@@ -5,6 +5,7 @@ import time
 import unittest
 from unittest import mock
 
+from process_control import RunCancellation
 from telegram_bridge import (
     DEFAULT_TELEGRAM_API_TIMEOUT_SECONDS,
     TelegramApprovalDecision,
@@ -143,6 +144,29 @@ class TelegramApprovalBrokerTests(unittest.TestCase):
 
         self.assertEqual(decision.action, TelegramDecisionAction.DENY)
         self.assertEqual(decision.source, "timeout")
+
+    def test_cancellation_releases_waiter_before_approval_timeout(self):
+        broker = TelegramApprovalBroker()
+        cancellation = RunCancellation()
+        broker.register(make_approval("cancel-id"), TelegramDecisionAction.DENY)
+        decisions = []
+        waiter = threading.Thread(
+            target=lambda: decisions.append(
+                broker.wait_for_decision(
+                    "cancel-id",
+                    timeout_seconds=30,
+                    cancellation=cancellation,
+                )
+            )
+        )
+        waiter.start()
+
+        cancellation.request("remote operator")
+        waiter.join(timeout=1)
+
+        self.assertFalse(waiter.is_alive())
+        self.assertEqual(decisions[0].action, TelegramDecisionAction.STOP)
+        self.assertEqual(decisions[0].source, "cancellation")
 
     def test_shutdown_releases_waiter_conservatively(self):
         broker = TelegramApprovalBroker()

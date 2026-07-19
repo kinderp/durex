@@ -365,6 +365,7 @@ def handle_approval_request(
     task: Optional[dict],
     telegram_verbosity: str,
     audit_events: list[ApprovalAuditEvent],
+    cancellation: Optional[RunCancellation] = None,
 ) -> bool:
     """
     Apply policy and optionally ask Telegram for one approval request.
@@ -427,7 +428,13 @@ def handle_approval_request(
         return True
 
     telegram_request = build_telegram_request(task, approval, verbosity=telegram_verbosity)
-    telegram_decision = approval_provider.request_decision(telegram_request)
+    if cancellation is None:
+        telegram_decision = approval_provider.request_decision(telegram_request)
+    else:
+        telegram_decision = approval_provider.request_decision(
+            telegram_request,
+            cancellation=cancellation,
+        )
 
     if telegram_decision.action == TelegramDecisionAction.STOP:
         record_audit_event(
@@ -585,6 +592,7 @@ def run_pty_command(
                         task=task,
                         telegram_verbosity=telegram_verbosity,
                         audit_events=audit_events,
+                        cancellation=cancellation,
                     )
                     audit_event = audit_events[-1]
                     events.interaction(
