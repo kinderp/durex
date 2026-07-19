@@ -374,9 +374,15 @@ class TelegramApprovalBridge:
         try:
             with request.urlopen(req, timeout=request_timeout) as response:
                 data = json.loads(response.read().decode("utf-8"))
-        except error.URLError as exc:
+        except (error.URLError, OSError) as exc:
             raise TelegramBridgeError(f"Telegram API request failed: {exc}") from exc
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise TelegramBridgeError(f"Telegram API returned malformed JSON: {exc}") from exc
 
+        if not isinstance(data, dict):
+            raise TelegramBridgeError(
+                f"Telegram API returned a non-object response: {type(data).__name__}"
+            )
         if not data.get("ok"):
             raise TelegramBridgeError(f"Telegram API returned an error: {data}")
 
@@ -661,7 +667,11 @@ class TelegramApprovalBridge:
             payload["offset"] = self._last_update_id + 1
 
         data = self.api_call("getUpdates", payload, request_timeout=max(1, timeout) + 5)
-        updates = data.get("result", [])
+        updates = data.get("result")
+        if not isinstance(updates, list) or any(
+            not isinstance(update, dict) for update in updates
+        ):
+            raise TelegramBridgeError("Telegram getUpdates returned an invalid update list.")
 
         for update in updates:
             update_id = update.get("update_id")

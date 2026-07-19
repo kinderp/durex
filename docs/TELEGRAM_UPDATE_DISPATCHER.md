@@ -172,6 +172,11 @@ Transient Bot API polling errors use bounded exponential backoff. In
 `telegram-control`, the latest error remains visible through `/status`. A
 successful poll resets the delay.
 
+The transport validates JSON, the top-level Bot API object, and every entry in
+the `getUpdates` result before advancing its local offset. Malformed or truncated
+responses become `TelegramBridgeError`, so the dispatcher uses the same bounded
+retry path without partially acknowledging the batch.
+
 The transport advances its local offset across each fetched Bot API response.
 Expected transport failures while dispatching one update are therefore isolated
 to that update and reported without aborting the rest of the fetched batch. This

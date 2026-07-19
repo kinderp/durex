@@ -103,6 +103,31 @@ class TelegramBridgeDownloadTests(unittest.TestCase):
             request_timeout=8,
         )
 
+    def test_api_call_normalizes_malformed_json_and_top_level_shape(self):
+        """Malformed HTTP bodies must remain retryable bridge failures."""
+
+        for payload in (b"not-json", b"[]"):
+            with self.subTest(payload=payload), mock.patch(
+                "telegram_bridge.request.urlopen",
+                return_value=StubResponse(payload),
+            ):
+                with self.assertRaises(TelegramBridgeError):
+                    self.bridge.api_call("getUpdates", {})
+
+    def test_poll_updates_rejects_malformed_batch_before_advancing_offset(self):
+        """One malformed update must not partially acknowledge its batch."""
+
+        self.bridge._last_update_id = 7
+        with mock.patch.object(
+            self.bridge,
+            "api_call",
+            return_value={"ok": True, "result": [{"update_id": 8}, "invalid"]},
+        ):
+            with self.assertRaisesRegex(TelegramBridgeError, "invalid update list"):
+                self.bridge.poll_updates(timeout=0)
+
+        self.assertEqual(self.bridge._last_update_id, 7)
+
 
 if __name__ == "__main__":
     unittest.main()
