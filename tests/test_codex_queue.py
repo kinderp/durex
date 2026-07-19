@@ -167,6 +167,32 @@ class QueueLifecycleCharacterizationTests(unittest.TestCase):
         self.assertEqual(stored["status"], "COMPLETED")
         self.assertEqual(stored["output"], "done\n")
 
+    def test_live_finalization_failure_preserves_runner_error(self):
+        """Cleanup failure must add context without replacing the root cause."""
+
+        task = self.add_task(max_attempts=1)
+        task_service = codex_queue.get_task_service()
+        sink = mock.Mock()
+        sink.fail_open_run.side_effect = RuntimeError("database unavailable")
+
+        with mock.patch.object(
+            codex_queue,
+            "PersistentRunnerEventSink",
+            return_value=sink,
+        ), mock.patch.object(
+            codex_queue,
+            "run_subprocess_command",
+            side_effect=RuntimeError("runner failed"),
+        ):
+            codex_queue.run_codex_subprocess(task, task_service=task_service)
+
+        stored = self.load_task(task["id"])
+        self.assertEqual(stored["status"], "FAILED")
+        self.assertEqual(
+            stored["last_error"],
+            "runner failed; live-output finalization failed: database unavailable",
+        )
+
     def test_subprocess_output_is_queryable_before_process_exit(self):
         """The live projection must update while subprocess work is running."""
 

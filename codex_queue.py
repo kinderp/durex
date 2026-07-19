@@ -474,9 +474,23 @@ def run_codex_subprocess(
             task_service=tasks,
         )
     except Exception as exc:
+        error = finalize_failed_live_run(event_sink, exc)
+        tasks.update_task(task_id, status="FAILED", last_error=error)
+        print(f"Task #{task_id} error: {error}")
+
+
+def finalize_failed_live_run(
+    event_sink: PersistentRunnerEventSink,
+    original_error: BaseException,
+) -> str:
+    """Close an open live run without hiding the runner's original error."""
+
+    error = str(original_error)
+    try:
         event_sink.fail_open_run()
-        tasks.update_task(task_id, status="FAILED", last_error=str(exc))
-        print(f"Task #{task_id} error: {exc}")
+    except Exception as finalization_error:
+        error = f"{error}; live-output finalization failed: {finalization_error}"
+    return error
 
 
 def build_telegram_bridge(enabled: bool, verbosity: str) -> Optional[TelegramApprovalBridge]:
@@ -650,13 +664,13 @@ def run_codex_pty(
             task_service=tasks,
         )
     except TelegramBridgeError as exc:
-        event_sink.fail_open_run()
-        tasks.update_task(task_id, status="FAILED", last_error=str(exc))
-        print(f"Telegram configuration error for task #{task_id}: {exc}")
+        error = finalize_failed_live_run(event_sink, exc)
+        tasks.update_task(task_id, status="FAILED", last_error=error)
+        print(f"Telegram configuration error for task #{task_id}: {error}")
     except Exception as exc:
-        event_sink.fail_open_run()
-        tasks.update_task(task_id, status="FAILED", last_error=str(exc))
-        print(f"Task #{task_id} PTY error: {exc}")
+        error = finalize_failed_live_run(event_sink, exc)
+        tasks.update_task(task_id, status="FAILED", last_error=error)
+        print(f"Task #{task_id} PTY error: {error}")
 
 
 def run_task(
