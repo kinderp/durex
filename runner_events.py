@@ -16,7 +16,7 @@ from runtime_contracts import (
     RunnerLifecycleEvent,
     RunnerOutputEvent,
 )
-from task_services import TaskApplicationService
+from task_services import TaskApplicationService, TaskClaim
 
 
 class TerminalDisplayNormalizer:
@@ -172,6 +172,8 @@ class PersistentRunnerEventSink:
         task_id: int,
         run_id: str,
         attempt: int,
+        observer: Optional[RunnerEventSink] = None,
+        claim: Optional[TaskClaim] = None,
     ) -> None:
         self.tasks = tasks
         self.task_id = task_id
@@ -180,6 +182,8 @@ class PersistentRunnerEventSink:
         self.last_sequence = 0
         self.started = False
         self.finished = False
+        self.observer = observer
+        self.claim = claim
         self._normalizer = TerminalDisplayNormalizer()
 
     def __call__(self, event: RunnerEvent) -> None:
@@ -190,9 +194,15 @@ class PersistentRunnerEventSink:
 
         if isinstance(event, RunnerLifecycleEvent):
             if event.state == RunnerLifecycle.STARTED:
-                self.tasks.start_task_run(self.task_id, self.run_id, self.attempt)
+                self.tasks.start_task_run(
+                    self.task_id,
+                    self.run_id,
+                    self.attempt,
+                    claim=self.claim,
+                )
                 self.started = True
                 self.last_sequence = event.sequence
+                self._observe(event)
                 return
             self.tasks.finish_task_run(
                 self.task_id,
@@ -200,9 +210,11 @@ class PersistentRunnerEventSink:
                 event.sequence,
                 event.state.value,
                 event.returncode,
+                claim=self.claim,
             )
             self.finished = True
             self.last_sequence = event.sequence
+            self._observe(event)
             return
 
         if isinstance(event, RunnerOutputEvent):
@@ -213,11 +225,18 @@ class PersistentRunnerEventSink:
                     self.run_id,
                     event.sequence,
                     text,
+                    claim=self.claim,
                 )
             self.last_sequence = event.sequence
+            self._observe(event)
             return
 
         self.last_sequence = event.sequence
+        self._observe(event)
+
+    def _observe(self, event: RunnerEvent) -> None:
+        if self.observer is not None:
+            self.observer(event)
 
     def fail_open_run(self, returncode: Optional[int] = None) -> bool:
         """Conservatively finalize a started run after runner-side failure."""
@@ -230,6 +249,7 @@ class PersistentRunnerEventSink:
             self.last_sequence + 1,
             RunnerLifecycle.FAILED.value,
             returncode,
+            claim=self.claim,
         )
         self.finished = True
         self.last_sequence += 1

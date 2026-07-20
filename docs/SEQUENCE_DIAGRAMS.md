@@ -47,26 +47,25 @@ sequenceDiagram
     User->>CLI: python3 codex_queue.py add --title --prompt --workdir --priority
     CLI->>DB: add_task(title, prompt, workdir, priority, max_attempts)
     User->>CLI: python3 codex_queue.py run
-    CLI->>Worker: worker_loop(check_interval, stop_when_empty)
-    Worker->>DB: get_next_task()
-    DB-->>Worker: task{id,title,prompt,workdir,status,attempts}
-    Worker->>Runner: run_codex_subprocess(task)
+    CLI->>Worker: DurableWorkerSupervisor.run(...)
+    Worker->>DB: claim_next(worker_id, lease_id, run_id)
+    DB-->>Worker: TaskClaim{task, lease_id, lease_epoch, run_id}
+    Worker->>Runner: run_codex_subprocess(claim.task, claim, cancellation)
     Runner->>Runner: build_codex_command(task)
-    Runner->>DB: update_task(id, status='RUNNING', attempts=attempts+1)
     Runner->>Sink: lifecycle STARTED(run_id, sequence)
-    Sink->>DB: start_run(task_id, run_id)
+    Sink->>DB: start_run(task_id, run_id, lease fence)
     Runner->>Codex: run_subprocess_command(cmd, cwd, sink)
     loop while stdout or stderr is readable
         Codex-->>Runner: output bytes
         Runner->>Sink: output(run_id, sequence, text)
-        Sink->>DB: append_run_output(...)
+        Sink->>DB: append_run_output(..., lease fence)
     end
     Codex-->>Runner: returncode
     Runner->>Sink: lifecycle COMPLETED(run_id, sequence)
-    Sink->>DB: finish_run(...)
+    Sink->>DB: finish_run(..., lease fence)
     Runner->>Runner: extract_session_id(output)
     Runner->>Runner: extract_reset_at(output)
-    Runner->>DB: update_task(id, status='COMPLETED', output, session_id)
+    Runner->>DB: finish_claim(status='COMPLETED', output, session_id)
 ```
 
 ### Participants and responsibilities
@@ -79,8 +78,8 @@ into function calls such as `add_task()` and `worker_loop()`.
 `SQLite tasks and live tables` store the queue, per-attempt lifecycle, and
 bounded output chunks.
 
-`worker_loop()` polls the queue, selects the next runnable task, and hands it to
-the runner.
+`DurableWorkerSupervisor` atomically claims the next runnable task, renews its
+lease, and hands the fenced execution to the runner.
 
 `run_codex_subprocess()` is the non-interactive runner path.
 
@@ -96,10 +95,10 @@ the runner.
 
 `CLI -> Worker: worker_loop(...)` hands control to the queue scheduler.
 
-`Worker -> DB: get_next_task()` asks SQLite for the highest-priority runnable
-task.
+`Worker -> DB: claim_next(...)` selects and changes the highest-priority
+runnable task in one `BEGIN IMMEDIATE` transaction.
 
-`DB -> Worker: task{...}` returns the selected task row.
+`DB -> Worker: TaskClaim{...}` returns task, run, lease, and fencing identity.
 
 `Worker -> Runner: run_codex_subprocess(task)` starts execution for that task.
 
@@ -231,9 +230,9 @@ sequenceDiagram
     participant Runner as run_codex_subprocess()
     participant Codex as Codex CLI
 
-    Worker->>DB: get_next_task()
-    DB-->>Worker: task where status='WAITING_LIMIT' and reset_at <= now
-    Worker->>Runner: run_codex_subprocess(task)
+    Worker->>DB: claim_next_task(...)
+    DB-->>Worker: fenced claim where WAITING_LIMIT and reset_at <= now
+    Worker->>Runner: run_codex_subprocess(claim.task, claim)
     Runner->>Runner: build_codex_command(task)
     alt task.session_id exists
         Runner->>Codex: codex exec resume session_id next_step
@@ -241,7 +240,7 @@ sequenceDiagram
         Runner->>Codex: codex exec original_prompt
     end
     Codex-->>Runner: output, returncode
-    Runner->>DB: update_task(status, output, session_id, reset_at=None)
+    Runner->>DB: finish_task_claim(status, output, session_id, reset_at=None)
 ```
 
 ### Participants and responsibilities
@@ -259,7 +258,7 @@ depending on whether `session_id` exists.
 
 ### Message triggers
 
-`Worker -> DB: get_next_task()` is triggered on every worker polling cycle.
+`Worker -> DB: claim_next_task()` is triggered on every worker polling cycle.
 
 `DB -> Worker: task where status='WAITING_LIMIT' and reset_at <= now` happens
 only after the stored reset time is in the past.
@@ -707,8 +706,8 @@ sequenceDiagram
     User->>Queue: add many tasks before sleeping
     User->>Worker: start overnight worker
     loop while tasks are available
-        Worker->>DB: get_next_task()
-        DB-->>Worker: next task
+        Worker->>DB: claim_next_task(...)
+        DB-->>Worker: fenced task claim
         Worker->>Codex: execute task
         alt approval needed
             Codex-->>Telegram: via PTY bridge approval request
@@ -731,8 +730,8 @@ sequenceDiagram
 
 `Durex queue` stores all tasks and their priorities.
 
-`worker_loop()` repeatedly selects runnable work until no task is available or
-the worker is stopped.
+`DurableWorkerSupervisor` repeatedly claims runnable work until no task is
+available or the worker is stopped.
 
 `Codex CLI` executes each task.
 
@@ -747,10 +746,10 @@ commands.
 
 `User -> Worker: start overnight worker` starts unattended processing.
 
-`Worker -> DB: get_next_task()` happens at the top of each loop iteration.
+`Worker -> DB: claim_next_task()` happens at the top of each loop iteration.
 
-`DB -> Worker: next task` returns the next runnable task, ordered by status,
-priority, and id.
+`DB -> Worker: fenced task claim` atomically returns the next runnable task,
+ordered by status, priority, and id, with run and lease identity.
 
 `Worker -> Codex: execute task` starts either subprocess or PTY execution.
 

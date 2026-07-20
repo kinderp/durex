@@ -55,7 +55,7 @@ flowchart LR
     Control -->|authorized command| Service
     Service -->|repository operation| Queue
     Control -->|/run starts background worker| Worker
-    Worker -->|select next task| Service
+    Worker -->|atomic claim and heartbeat| Service
     Worker -->|run task| Runner
     Runner -->|task output and status| Service
     Control -->|send response| Bridge
@@ -66,8 +66,8 @@ flowchart LR
 ### Architecture nodes
 
 `Telegram user` is the operator using the configured Telegram chat. This user can
-inspect the queue, add tasks, start the worker, request a graceful stop, and read
-task output tails.
+inspect the queue, add tasks, start the worker, request either stop mode, and
+read task output tails.
 
 `Telegram Bot API` is Telegram's HTTP interface. Durex uses it through long
 polling and outbound messages.
@@ -86,15 +86,15 @@ message text, calls the injected task service or worker operation, catches
 command errors, and formats a Telegram response.
 
 `TaskApplicationService` is the shared application boundary for status, task
-lists, task detail, add, output tail, and runnable selection. Task SQL remains in
-its SQLite repository implementation.
+lists, task detail, add, output tail, atomic claims, heartbeat, cancellation,
+and finalization. Task SQL remains in its SQLite repository implementation.
 
 `SQLite task queue` stores tasks, statuses, attempts, priorities, prompts,
 working directories, output, and errors.
 
-`Durex worker thread` is created by `/run`. It runs in the local process and
-continues until the queue is empty, no task can run, an error occurs, or a stop
-request is observed before the next task starts.
+`Durex worker thread` runs `DurableWorkerSupervisor`. It owns one fenced claim,
+heartbeat, and cancellation token until the queue is empty, an error occurs, or
+a stop request is completed.
 
 `Codex runner` is the local execution path used for each task. Depending on
 configuration it can use the subprocess runner or the PTY runner.
@@ -102,7 +102,8 @@ configuration it can use the subprocess runner or the PTY runner.
 ### Architecture edge triggers
 
 `Telegram user -> Telegram Bot API` is triggered when the user sends a command
-such as `/status`, `/tasks`, `/add`, `/run`, `/tail`, or `/stop`.
+such as `/status`, `/tasks`, `/add`, `/run`, `/tail`, `/stop`, or
+`/stop-current`.
 
 `telegram_dispatcher.py -> telegram_bridge.py` with `long poll getUpdates` is
 triggered continuously after `TelegramControlBot.run_forever()` delegates to the
@@ -116,12 +117,13 @@ callback from the Bot API.
 by commands that read or modify queue state, including `/status`, `/tasks`,
 `/add`, and `/tail`. The Telegram command router does not execute task SQL.
 
-`telegram_control.py -> Durex worker thread` is triggered by `/run` or `/stop`.
-`/run` starts a background thread if one is not already alive. `/stop` sets a
-flag that the worker checks before starting another task.
+`telegram_control.py -> Durex worker thread` is triggered by `/run`, `/stop`, or
+`/stop-current`. `/run` starts a background supervisor if one is not already
+alive. `/stop` sets a flag checked before the next claim. `/stop-current`
+persists and signals owner-scoped cancellation.
 
 `Durex worker thread -> TaskApplicationService` is triggered before each task run
-when the worker asks for the next executable task.
+when the supervisor atomically claims the next executable task and renews it.
 
 `Durex worker thread -> Codex runner` is triggered after a task has been claimed.
 
@@ -309,8 +311,8 @@ authorized and the message has text.
 
 `Router -> Queue` is triggered by `/status`, `/tasks`, `/add`, and `/tail`.
 
-`Router -> Worker` is triggered by `/status`, `/run`, `/stop`, and
-`/stop-worker`.
+`Router -> Worker` is triggered by `/status`, `/run`, `/stop`, `/stop-worker`,
+and `/stop-current`.
 
 `Router -> Bot: response text` is triggered by either a successful command or a
 controlled rejection such as invalid `/add` syntax or a disallowed workdir.
@@ -324,7 +326,9 @@ truncated to stay within Telegram message-size limits.
 
 ### `/status`
 
-Shows worker state and task counts by status.
+Shows worker state and task counts by status. During an active claim it also
+shows current task, run id, start time, last output time, and pending interaction
+state.
 
 ```text
 /status
@@ -411,8 +415,21 @@ Requests that the background worker stops before starting another task.
 /stop
 ```
 
-This does not forcibly kill the currently running Codex process. Hard process
-control should be added only with stronger policy and audit support.
+This does not kill the currently running Codex process. It asks the durable
+supervisor to stop before acquiring another task.
+
+### `/stop-current`
+
+Cancels the current supervisor-owned Codex run:
+
+```text
+/stop-current
+```
+
+The command does not accept a task id, run id, or PID. Durex first persists the
+request against the current lease, then terminates only the process group
+created by that runner. A pending Telegram approval is released immediately.
+The task becomes `CANCELLED`.
 
 ---
 
@@ -426,6 +443,8 @@ stateDiagram-v2
     Starting --> Running: background thread created
     Running --> Running: next task claimed and executed
     Running --> Stopping: /stop accepted
+    Running --> Cancelling: /stop-current accepted
+    Cancelling --> Running: current claim finalized CANCELLED
     Stopping --> Idle: stop flag observed before next task
     Running --> Idle: queue empty or no executable task
     Running --> Error: worker exception
@@ -443,6 +462,9 @@ task and running each task with the configured runner mode.
 
 `Stopping` means `/stop` has set `stop_after_current`. The current task is not
 forcibly killed; the worker checks the flag before starting another task.
+
+`Cancelling` means the current fenced claim has accepted a cancellation request
+and its owned process group is terminating.
 
 `Error` means the worker loop caught an exception and stored it in
 `last_error`, which is then visible from `/status`.
@@ -463,7 +485,7 @@ for another executable task.
 `Stopping -> Idle` is triggered when the worker observes `stop_after_current`
 before starting another task.
 
-`Running -> Idle` is triggered when `get_next_task()` returns no executable
+`Running -> Idle` is triggered when `claim_next_task()` returns no executable
 task.
 
 `Running -> Error` is triggered by an exception in the worker loop.

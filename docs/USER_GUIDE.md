@@ -522,6 +522,7 @@ python3 codex_queue.py telegram-control
 /tail 42
 /run
 /stop
+/stop-current
 ```
 
 Add a task remotely:
@@ -551,6 +552,16 @@ Request a graceful stop:
 
 `/stop` does not forcibly kill the current Codex process. It asks the background
 worker to stop before starting another task.
+
+Cancel the currently owned Codex run immediately:
+
+```text
+/stop-current
+```
+
+This command records a fenced cancellation request and terminates only the
+process group created for the active task. It does not accept a task id or PID.
+Use `/status` to confirm the current task/run and final `CANCELLED` state.
 
 Details: [TELEGRAM_REMOTE_CONTROL.md](TELEGRAM_REMOTE_CONTROL.md) and
 [TELEGRAM_UPDATE_DISPATCHER.md](TELEGRAM_UPDATE_DISPATCHER.md).
@@ -823,6 +834,7 @@ Tasks move through these statuses:
 | `WAITING_LIMIT` | Blocked until a usage-limit reset time |
 | `COMPLETED` | Codex exited successfully |
 | `FAILED` | No more retries or local runner error |
+| `CANCELLED` | Current run was stopped by the operator or approval flow |
 
 When a task fails with a non-zero return code, Durex retries it while attempts
 remain. When it sees usage-limit output, it moves the task to `WAITING_LIMIT`

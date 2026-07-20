@@ -16,7 +16,9 @@ from typing import Optional
 
 DEFAULT_PRIORITY = 100
 DEFAULT_TASK_LIMIT = 10
-ALIASABLE_ACTIONS = frozenset({"status", "tasks", "tail", "run", "stop"})
+ALIASABLE_ACTIONS = frozenset(
+    {"status", "tasks", "tail", "run", "stop", "stop_current"}
+)
 
 
 class VoiceCommandError(ValueError):
@@ -31,7 +33,7 @@ class VoiceCommand:
     Attributes:
         action:
             One of ``status``, ``tasks``, ``tail``, ``add``, ``add_wizard``,
-            ``run`` or ``stop``.
+            ``run``, ``stop`` or ``stop_current``.
         title:
             Task title for ``add``.
         workdir:
@@ -253,6 +255,16 @@ def parse_voice_command(
 
     if text in {"stop", "stop worker", "ferma", "ferma worker", "fermati"}:
         return VoiceCommand(action="stop", transcript=text)
+
+    if text in {
+        "stop current",
+        "stop current task",
+        "cancel current task",
+        "ferma task corrente",
+        "annulla task corrente",
+        "interrompi task corrente",
+    }:
+        return VoiceCommand(action="stop_current", transcript=text)
 
     if text in {"add task", "new task", "aggiungi task", "aggiungi un task", "crea task"}:
         return VoiceCommand(action="add_wizard", transcript=text)

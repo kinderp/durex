@@ -345,8 +345,19 @@ flowchart LR
 tasks. Each agent can specialize by repository, task type, risk level, or
 available execution backend.
 
-This version requires stronger locking, leases, ownership, and audit metadata so
-multiple agents do not duplicate work or overwrite each other.
+The local supervisor already establishes atomic claims, opaque worker ids,
+lease ids, monotonic epochs, heartbeat, and owner-scoped cancellation. The
+multi-host release must preserve those contracts while replacing local SQLite
+scheduling with a control plane and authenticated outbound agents.
+
+SQLite must not be shared over NFS. Each machine runs one local Durex agent;
+Telegram talks to the control plane rather than opening a direct shell to each
+host. Placement uses enrolled node identity, capabilities, and configured
+workdir aliases. Offline event delivery uses bounded spooling and idempotent
+`(run_id, sequence)` replay.
+
+Detailed planning is tracked in
+[#21](https://github.com/kinderp/durex/issues/21).
 
 ### Goal
 

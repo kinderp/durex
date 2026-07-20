@@ -38,6 +38,14 @@ pty_runner
    :undoc-members:
    :show-inheritance:
 
+process_control
+---------------
+
+.. automodule:: process_control
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
 runner_events
 -------------
 
@@ -106,6 +114,14 @@ voice_transcriber
 -----------------
 
 .. automodule:: voice_transcriber
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+worker_supervisor
+-----------------
+
+.. automodule:: worker_supervisor
    :members:
    :undoc-members:
    :show-inheritance:

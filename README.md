@@ -37,6 +37,9 @@ Durex solves these problems with:
 | PTY runner | Available |
 | Typed runner events | Available |
 | Bounded persistent live output | Available through application services |
+| Atomic task claims and lease fencing | Available |
+| Durable worker heartbeat and stale recovery | Available |
+| Telegram current-run cancellation | Available |
 | Approval detector | Available |
 | Approval policy engine | Available |
 | Telegram approval bridge | Available |
@@ -53,7 +56,7 @@ Durex solves these problems with:
 flowchart TD
     User[User] --> CLI[codex_queue.py]
     CLI --> DB[(SQLite task database)]
-    Worker[Worker loop] --> DB
+    Worker[Durable worker supervisor] --> DB
     Worker --> Runner{Runner mode}
     Runner --> Subprocess[subprocess runner]
     Runner --> PTY[PTY runner]
@@ -97,6 +100,7 @@ More diagrams are available in:
 - [`docs/SEQUENCE_DIAGRAMS.md`](docs/SEQUENCE_DIAGRAMS.md)
 - [`docs/PTY_VS_EVENTS.md`](docs/PTY_VS_EVENTS.md)
 - [`docs/LIVE_OUTPUT.md`](docs/LIVE_OUTPUT.md)
+- [`docs/WORKER_SUPERVISOR.md`](docs/WORKER_SUPERVISOR.md)
 - [`docs/TELEGRAM_APPROVALS.md`](docs/TELEGRAM_APPROVALS.md)
 - [`docs/TELEGRAM_REMOTE_CONTROL.md`](docs/TELEGRAM_REMOTE_CONTROL.md)
 - [`docs/TELEGRAM_VOICE_COMMANDS.md`](docs/TELEGRAM_VOICE_COMMANDS.md)
@@ -152,6 +156,8 @@ python3 -m venv .venv
 ├── runner_events.py            # Event sequencing and live-output projection
 ├── runtime_contracts.py        # Transport-neutral runtime contracts
 ├── task_services.py            # Task and live-output SQLite services
+├── process_control.py          # Owner-scoped process-group cancellation
+├── worker_supervisor.py        # Claims, heartbeat and worker lifecycle
 ├── config.example.yaml         # Planned v0.2 configuration shape
 ├── requirements-dev.txt        # Development documentation dependencies
 ├── requirements-voice.txt      # Optional local voice transcription dependency
@@ -178,6 +184,7 @@ python3 -m venv .venv
     ├── SPHINX_API_DOCUMENTATION.md
     ├── TELEGRAM_REMOTE_CONTROL.md
     ├── TELEGRAM_VOICE_COMMANDS.md
+    ├── WORKER_SUPERVISOR.md
     └── TELEGRAM_APPROVALS.md
 ```
 
@@ -481,6 +488,9 @@ Then start the worker from Telegram:
 /run
 ```
 
+Use `/stop` to finish the current task and stop before the next one. Use
+`/stop-current` to cancel only the process group owned by the active task.
+
 Remote control does not execute arbitrary shell input from Telegram. Direct live
 Codex terminal control is intentionally left for a future policy layer such as
 Alfred.
@@ -666,6 +676,7 @@ Then add one task per folder. This keeps Codex isolated and avoids mixing files 
 | [`docs/SYSTEM_OVERVIEW.md`](docs/SYSTEM_OVERVIEW.md) | Whole-system map and Python file responsibilities |
 | [`docs/APPLICATION_SERVICES.md`](docs/APPLICATION_SERVICES.md) | Task service, repository, runner-event and transport boundaries |
 | [`docs/LIVE_OUTPUT.md`](docs/LIVE_OUTPUT.md) | Typed runner events, SQLite live output, cursors, retention and migration |
+| [`docs/WORKER_SUPERVISOR.md`](docs/WORKER_SUPERVISOR.md) | Atomic claims, leases, recovery, process cancellation and multi-host boundary |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | High-level architecture and data model |
 | [`docs/SEQUENCE_DIAGRAMS.md`](docs/SEQUENCE_DIAGRAMS.md) | Function-level runtime flows |
 | [`docs/PTY_VS_EVENTS.md`](docs/PTY_VS_EVENTS.md) | Comparison between PTY and structured events |

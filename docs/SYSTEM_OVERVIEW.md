@@ -38,7 +38,7 @@ flowchart TD
     VoiceParser[voice_commands.py]
     VoiceSTT[voice_transcriber.py]
     DB[(SQLite task queue)]
-    Worker[Worker loop]
+    Worker[Durable worker supervisor]
     Runner{Runner mode}
     Subprocess[subprocess runner]
     PTY[pty_runner.py]
@@ -59,7 +59,7 @@ flowchart TD
     Services -->|repository operation| DB
     CLI -->|start worker| Worker
     Control -->|/run starts worker thread| Worker
-    Worker -->|select ready task| Services
+    Worker -->|atomic claim and heartbeat| Services
     Worker -->|choose configured runner| Runner
     Runner -->|non-interactive task| Subprocess
     Runner -->|interactive PTY task| PTY
@@ -109,8 +109,9 @@ commands.
 `SQLite task queue` is the durable system state. It stores task state and final
 output plus bounded per-run live output and lifecycle metadata.
 
-`Worker loop` is the local scheduler. It repeatedly claims the next runnable task
-and runs it until the queue is empty, blocked, or stopped.
+`Durable worker supervisor` is the local scheduler. It atomically claims the
+next runnable task, renews its lease, and runs it until the queue is empty,
+blocked, or stopped.
 
 `Runner mode` selects between the classic subprocess path and the PTY path.
 
@@ -546,13 +547,16 @@ Telegram `/run`.
 
 The scheduling loop:
 
-1. asks `TaskApplicationService` for the next runnable task;
+1. atomically claims the next runnable task through `TaskApplicationService`;
 2. skips tasks blocked by `WAITING_LIMIT` until `reset_at`;
-3. marks the selected task as `RUNNING`;
-4. increments attempts;
+3. marks the task `RUNNING`, increments attempts, and assigns a fenced lease in
+   the same transaction;
+4. renews the lease while the runner is active;
 5. chooses the configured runner mode;
 6. persists typed live output while the process is active;
-7. records final output, failure, completion, or waiting state.
+7. records a fenced final output, retry, failure, cancellation, or waiting state.
+
+Details: [WORKER_SUPERVISOR.md](WORKER_SUPERVISOR.md).
 
 Details:
 

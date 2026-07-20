@@ -5,6 +5,7 @@ Tests for Telegram remote control command routing.
 import tempfile
 from pathlib import Path
 import os
+import threading
 import unittest
 from unittest import mock
 
@@ -299,9 +300,10 @@ class TelegramControlTests(unittest.TestCase):
         notifications = []
 
         def complete_subprocess(
-            _cmd, *, task_id, cwd, event_sink, run_id
+            _cmd, *, task_id, cwd, event_sink, run_id, cancellation
         ):
             self.assertEqual(cwd, self.tmp.name)
+            self.assertFalse(cancellation.requested)
             emitter = RunnerEventEmitter(task_id, event_sink, run_id)
             emitter.lifecycle(RunnerLifecycle.STARTED)
             emitter.output("worker done")
@@ -366,6 +368,59 @@ class TelegramControlTests(unittest.TestCase):
             )
 
         self.assertEqual(captured, [provider])
+
+    def test_status_and_stop_current_use_supervisor_owned_claim(self):
+        """Telegram exposes current-run state and cancels only that run."""
+
+        task_service = codex_queue.get_task_service()
+        task_id = task_service.add_task(
+            title="Remote cancellation",
+            prompt="Wait for cancellation.",
+            workdir=self.tmp.name,
+            max_attempts=1,
+        )
+        bot = TelegramControlBot(
+            bridge=FakeBridge(),
+            config=TelegramControlConfig(allowed_workdirs=[self.tmp.name]),
+            task_service=task_service,
+        )
+        executing = threading.Event()
+
+        def wait_for_stop(_task, **kwargs):
+            executing.set()
+            self.assertTrue(kwargs["cancellation"].wait(2.0))
+
+        with mock.patch.object(codex_queue, "run_task", side_effect=wait_for_stop):
+            self.assertEqual(bot.start_worker(), "Worker started.")
+            self.assertTrue(executing.wait(2.0))
+            status = bot.handle_text("/status")
+            response = bot.handle_text("/stop-current")
+            bot.supervisor._thread.join(timeout=2.0)
+
+        self.assertIn(f"Current task: #{task_id}", status)
+        self.assertIn("Run:", status)
+        self.assertEqual(response, "Current task cancellation requested.")
+        self.assertEqual(task_service.task_detail(task_id).status, "CANCELLED")
+
+    def test_voice_stop_current_uses_supervisor_cancellation(self):
+        """Voice cancellation routes through the same owner-scoped operation."""
+
+        bot = TelegramControlBot(
+            bridge=FakeBridge(),
+            config=TelegramControlConfig(allowed_workdirs=[self.tmp.name]),
+        )
+
+        with mock.patch.object(
+            bot,
+            "stop_current_task",
+            return_value="Current task cancellation requested.",
+        ) as stop_current:
+            response = bot.handle_voice_command(
+                parse_voice_command("annulla task corrente")
+            )
+
+        stop_current.assert_called_once_with()
+        self.assertEqual(response, "Current task cancellation requested.")
 
     def test_handle_add_message_rejects_disallowed_workdir(self):
         """Remote users must not enqueue tasks outside allowed workdir roots."""
@@ -731,6 +786,29 @@ class TelegramControlTests(unittest.TestCase):
         self.assertIn("Durex status", voice_response)
         self.assertIn('"status"', Path(alias_file).read_text(encoding="utf-8"))
         self.assertIn("abbia walker", Path(alias_file).read_text(encoding="utf-8"))
+
+    def test_learn_command_accepts_stop_current_target(self):
+        """Pronunciation aliases can target immediate current-run cancellation."""
+
+        alias_file = str(Path(self.tmp.name) / "voice_aliases.json")
+        bot = TelegramControlBot(
+            bridge=FakeBridge(chat_id=123),
+            config=TelegramControlConfig(
+                allowed_workdirs=[self.tmp.name],
+                voice_aliases_file=alias_file,
+            ),
+        )
+
+        response = bot.handle_text("/learn stop-current fermacorrente")
+
+        self.assertEqual(
+            response,
+            "Learned voice alias: 'fermacorrente' -> stop_current",
+        )
+        self.assertEqual(
+            bot.config.voice_command_aliases["fermacorrente"],
+            "stop_current",
+        )
 
     def test_reassigned_voice_alias_remains_stable_after_reload(self):
         """Relearning a phrase should replace its previous persisted action."""
@@ -1449,6 +1527,8 @@ class TelegramControlTests(unittest.TestCase):
         self.assertIn("Voice transcript: avvia worker", response)
         self.assertIn("Worker started.", response)
         self.assertEqual(transcriber.calls, ["it"])
+        bot.supervisor._thread.join(timeout=2.0)
+        self.assertFalse(bot.supervisor._thread.is_alive())
 
     def test_voice_tasks_accepts_language_detection_drift(self):
         """Task-list commands should not be blocked by wrong automatic language detection."""

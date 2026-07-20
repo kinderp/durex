@@ -603,6 +603,20 @@ Ask the worker to stop before starting another task:
 This is a graceful stop request. It does not blindly kill an already running
 Codex process.
 
+### `/stop-current`
+
+Cancel the currently owned Codex task immediately:
+
+```text
+/stop-current
+```
+
+Durex records the request against the active lease and terminates only that
+runner's process group. The task becomes `CANCELLED`. The same operation is
+available through the `Stop Current` button and the Italian/English voice
+phrases documented in
+[TELEGRAM_VOICE_COMMANDS.md](TELEGRAM_VOICE_COMMANDS.md#stop-current-task).
+
 ### `/config`
 
 Show button-based runtime controls:

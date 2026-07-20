@@ -18,6 +18,7 @@ TASK_STATUSES = frozenset(
         "WAITING_LIMIT",
         "COMPLETED",
         "FAILED",
+        "CANCELLED",
     }
 )
 
@@ -37,6 +38,16 @@ TASK_COLUMNS = frozenset(
         "output",
         "created_at",
         "updated_at",
+        "active_run_id",
+        "lease_id",
+        "lease_owner",
+        "lease_epoch",
+        "lease_expires_at",
+        "started_at",
+        "heartbeat_at",
+        "last_output_at",
+        "cancel_requested_at",
+        "terminal_reason",
     }
 )
 
@@ -44,6 +55,15 @@ LIVE_RUN_STATUSES = frozenset({"started", "completed", "failed", "cancelled"})
 DEFAULT_LIVE_OUTPUT_MAX_CHARS = 200_000
 DEFAULT_LIVE_OUTPUT_MAX_CHUNKS = 1_000
 DEFAULT_LIVE_OUTPUT_RUNS_PER_TASK = 3
+CLAIM_FINISH_FIELDS = frozenset(
+    {
+        "session_id",
+        "next_step",
+        "reset_at",
+        "last_error",
+        "output",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -65,6 +85,16 @@ class TaskRecord:
     output: Optional[str]
     created_at: str
     updated_at: str
+    active_run_id: Optional[str]
+    lease_id: Optional[str]
+    lease_owner: Optional[str]
+    lease_epoch: int
+    lease_expires_at: Optional[str]
+    started_at: Optional[str]
+    heartbeat_at: Optional[str]
+    last_output_at: Optional[str]
+    cancel_requested_at: Optional[str]
+    terminal_reason: Optional[str]
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "TaskRecord":
@@ -132,6 +162,18 @@ class LiveOutputPage:
     returncode: Optional[int]
 
 
+@dataclass(frozen=True)
+class TaskClaim:
+    """One atomically acquired, fenced task execution lease."""
+
+    task: TaskRecord
+    worker_id: str
+    lease_id: str
+    run_id: str
+    lease_epoch: int
+    lease_expires_at: str
+
+
 class TaskRepositoryError(ValueError):
     """Raised when a repository operation violates the task contract."""
 
@@ -155,6 +197,45 @@ class TaskRepository(Protocol):
 
     def next_runnable(self, now: str) -> Optional[TaskRecord]: ...
 
+    def claim_next(
+        self,
+        *,
+        now: str,
+        lease_expires_at: str,
+        worker_id: str,
+        lease_id: str,
+        run_id: str,
+    ) -> Optional[TaskClaim]: ...
+
+    def heartbeat_claim(
+        self,
+        task_id: int,
+        lease_id: str,
+        lease_epoch: int,
+        now: str,
+        lease_expires_at: str,
+    ) -> bool: ...
+
+    def finish_claim(
+        self,
+        task_id: int,
+        lease_id: str,
+        lease_epoch: int,
+        status: str,
+        terminal_reason: str,
+        **fields: object,
+    ) -> bool: ...
+
+    def request_claim_cancellation(
+        self,
+        task_id: int,
+        lease_id: str,
+        lease_epoch: int,
+        reason: str,
+    ) -> bool: ...
+
+    def recover_stale_claims(self, now: str) -> list[int]: ...
+
     def update(self, task_id: int, **fields: object) -> bool: ...
 
     def transition(
@@ -173,9 +254,24 @@ class TaskRepository(Protocol):
 
     def latest(self) -> Optional[TaskRecord]: ...
 
-    def start_run(self, task_id: int, run_id: str, attempt: int) -> bool: ...
+    def start_run(
+        self,
+        task_id: int,
+        run_id: str,
+        attempt: int,
+        lease_id: Optional[str] = None,
+        lease_epoch: Optional[int] = None,
+    ) -> bool: ...
 
-    def append_run_output(self, task_id: int, run_id: str, sequence: int, text: str) -> bool: ...
+    def append_run_output(
+        self,
+        task_id: int,
+        run_id: str,
+        sequence: int,
+        text: str,
+        lease_id: Optional[str] = None,
+        lease_epoch: Optional[int] = None,
+    ) -> bool: ...
 
     def finish_run(
         self,
@@ -184,6 +280,8 @@ class TaskRepository(Protocol):
         sequence: int,
         status: str,
         returncode: Optional[int],
+        lease_id: Optional[str] = None,
+        lease_epoch: Optional[int] = None,
     ) -> bool: ...
 
     def read_run_output(
@@ -240,8 +338,25 @@ class SQLiteTaskRepository:
                     last_error TEXT,
                     output TEXT,
                     created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
+                    updated_at TEXT NOT NULL,
+                    active_run_id TEXT,
+                    lease_id TEXT,
+                    lease_owner TEXT,
+                    lease_epoch INTEGER NOT NULL DEFAULT 0,
+                    lease_expires_at TEXT,
+                    started_at TEXT,
+                    heartbeat_at TEXT,
+                    last_output_at TEXT,
+                    cancel_requested_at TEXT,
+                    terminal_reason TEXT
                 )
+                """
+            )
+            self._ensure_task_lease_columns(con)
+            con.execute(
+                """
+                CREATE INDEX IF NOT EXISTS tasks_status_lease_idx
+                ON tasks(status, lease_expires_at, priority, id)
                 """
             )
             con.execute(
@@ -324,6 +439,7 @@ class SQLiteTaskRepository:
                     WHEN 'WAITING_LIMIT' THEN 2
                     WHEN 'PENDING' THEN 3
                     WHEN 'FAILED' THEN 4
+                    WHEN 'CANCELLED' THEN 5
                     WHEN 'COMPLETED' THEN 5
                     ELSE 6
                 END,
@@ -350,6 +466,256 @@ class SQLiteTaskRepository:
             """,
             (now,),
         )
+
+    def claim_next(
+        self,
+        *,
+        now: str,
+        lease_expires_at: str,
+        worker_id: str,
+        lease_id: str,
+        run_id: str,
+    ) -> Optional[TaskClaim]:
+        """Atomically claim the highest-priority runnable task."""
+
+        for name, value in (
+            ("worker_id", worker_id),
+            ("lease_id", lease_id),
+            ("run_id", run_id),
+        ):
+            if not value:
+                raise TaskRepositoryError(f"{name} must not be empty")
+        if lease_expires_at <= now:
+            raise TaskRepositoryError("lease_expires_at must be later than now")
+
+        with self._connect() as con:
+            con.row_factory = sqlite3.Row
+            con.execute("BEGIN IMMEDIATE")
+            row = con.execute(
+                """
+                SELECT *
+                FROM tasks
+                WHERE status = 'PENDING'
+                   OR (
+                        status = 'WAITING_LIMIT'
+                        AND reset_at IS NOT NULL
+                        AND reset_at <= ?
+                   )
+                ORDER BY priority ASC, id ASC
+                LIMIT 1
+                """,
+                (now,),
+            ).fetchone()
+            if row is None:
+                return None
+
+            task_id = int(row["id"])
+            lease_epoch = int(row["lease_epoch"]) + 1
+            cursor = con.execute(
+                """
+                UPDATE tasks
+                SET status = 'RUNNING', attempts = attempts + 1,
+                    active_run_id = ?, lease_id = ?, lease_owner = ?,
+                    lease_epoch = ?, lease_expires_at = ?, started_at = ?,
+                    heartbeat_at = ?, last_output_at = NULL,
+                    cancel_requested_at = NULL, terminal_reason = NULL,
+                    last_error = NULL, updated_at = ?
+                WHERE id = ? AND lease_epoch = ?
+                  AND (
+                    status = 'PENDING'
+                    OR (
+                        status = 'WAITING_LIMIT'
+                        AND reset_at IS NOT NULL
+                        AND reset_at <= ?
+                    )
+                  )
+                """,
+                (
+                    run_id,
+                    lease_id,
+                    worker_id,
+                    lease_epoch,
+                    lease_expires_at,
+                    now,
+                    now,
+                    now,
+                    task_id,
+                    lease_epoch - 1,
+                    now,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise TaskRepositoryError("Task claim changed during its transaction")
+            claimed = con.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+
+        task = TaskRecord.from_row(claimed)
+        return TaskClaim(
+            task=task,
+            worker_id=worker_id,
+            lease_id=lease_id,
+            run_id=run_id,
+            lease_epoch=lease_epoch,
+            lease_expires_at=lease_expires_at,
+        )
+
+    def heartbeat_claim(
+        self,
+        task_id: int,
+        lease_id: str,
+        lease_epoch: int,
+        now: str,
+        lease_expires_at: str,
+    ) -> bool:
+        """Renew one active lease only when its fencing identity still matches."""
+
+        if not lease_id:
+            raise TaskRepositoryError("lease_id must not be empty")
+        if lease_epoch < 1:
+            raise TaskRepositoryError("lease_epoch must be positive")
+        if lease_expires_at <= now:
+            raise TaskRepositoryError("lease_expires_at must be later than now")
+
+        with self._connect() as con:
+            cursor = con.execute(
+                """
+                UPDATE tasks
+                SET heartbeat_at = ?, lease_expires_at = ?, updated_at = ?
+                WHERE id = ? AND status = 'RUNNING'
+                  AND lease_id = ? AND lease_epoch = ?
+                """,
+                (now, lease_expires_at, now, task_id, lease_id, lease_epoch),
+            )
+            return cursor.rowcount == 1
+
+    def finish_claim(
+        self,
+        task_id: int,
+        lease_id: str,
+        lease_epoch: int,
+        status: str,
+        terminal_reason: str,
+        **fields: object,
+    ) -> bool:
+        """Finalize or release a task only for its current fenced lease."""
+
+        allowed = TASK_STATUSES - {"RUNNING"}
+        if status not in allowed:
+            raise TaskRepositoryError(f"Unknown terminal or release status: {status}")
+        if not lease_id:
+            raise TaskRepositoryError("lease_id must not be empty")
+        if lease_epoch < 1:
+            raise TaskRepositoryError("lease_epoch must be positive")
+        if not terminal_reason.strip():
+            raise TaskRepositoryError("terminal_reason must not be empty")
+        unknown_fields = set(fields) - CLAIM_FINISH_FIELDS
+        if unknown_fields:
+            raise TaskRepositoryError(
+                f"Claim finalization cannot update field: {sorted(unknown_fields)[0]}"
+            )
+
+        updates = dict(fields)
+        updates.update(
+            {
+                "status": status,
+                "terminal_reason": terminal_reason,
+                "lease_expires_at": None,
+                "updated_at": self._now(),
+            }
+        )
+        columns = ", ".join(f"{key} = ?" for key in updates)
+        values = [
+            *updates.values(),
+            task_id,
+            lease_id,
+            lease_epoch,
+        ]
+        with self._connect() as con:
+            cursor = con.execute(
+                f"""
+                UPDATE tasks SET {columns}
+                WHERE id = ? AND status = 'RUNNING'
+                  AND lease_id = ? AND lease_epoch = ?
+                """,
+                values,
+            )
+            return cursor.rowcount == 1
+
+    def request_claim_cancellation(
+        self,
+        task_id: int,
+        lease_id: str,
+        lease_epoch: int,
+        reason: str,
+    ) -> bool:
+        """Persist a cancellation request for the current fenced lease."""
+
+        if not lease_id:
+            raise TaskRepositoryError("lease_id must not be empty")
+        if lease_epoch < 1:
+            raise TaskRepositoryError("lease_epoch must be positive")
+        if not reason.strip():
+            raise TaskRepositoryError("Cancellation reason must not be empty")
+
+        now = self._now()
+        with self._connect() as con:
+            cursor = con.execute(
+                """
+                UPDATE tasks
+                SET cancel_requested_at = ?, terminal_reason = ?, updated_at = ?
+                WHERE id = ? AND status = 'RUNNING'
+                  AND lease_id = ? AND lease_epoch = ?
+                  AND cancel_requested_at IS NULL
+                """,
+                (now, reason, now, task_id, lease_id, lease_epoch),
+            )
+            return cursor.rowcount == 1
+
+    def recover_stale_claims(self, now: str) -> list[int]:
+        """Fail expired RUNNING tasks conservatively without re-executing them."""
+
+        reason = "Worker lease expired; process ownership could not be proven."
+        with self._connect() as con:
+            con.row_factory = sqlite3.Row
+            con.execute("BEGIN IMMEDIATE")
+            rows = con.execute(
+                """
+                SELECT id, active_run_id
+                FROM tasks
+                WHERE status = 'RUNNING'
+                  AND lease_expires_at IS NOT NULL
+                  AND lease_expires_at <= ?
+                ORDER BY id
+                """,
+                (now,),
+            ).fetchall()
+            task_ids = [int(row["id"]) for row in rows]
+            if not task_ids:
+                return []
+
+            placeholders = ", ".join("?" for _ in task_ids)
+            con.execute(
+                f"""
+                UPDATE tasks
+                SET status = 'FAILED', lease_expires_at = NULL,
+                    terminal_reason = ?, last_error = ?, updated_at = ?
+                WHERE id IN ({placeholders}) AND status = 'RUNNING'
+                  AND lease_expires_at <= ?
+                """,
+                (reason, reason, now, *task_ids, now),
+            )
+            for row in rows:
+                run_id = row["active_run_id"]
+                if run_id:
+                    con.execute(
+                        """
+                        UPDATE task_runs
+                        SET status = 'failed', finished_at = ?, updated_at = ?,
+                            last_event_sequence = last_event_sequence + 1
+                        WHERE run_id = ? AND status = 'started'
+                        """,
+                        (now, now, str(run_id)),
+                    )
+            return task_ids
 
     def update(self, task_id: int, **fields: object) -> bool:
         """Update task fields and return whether the task existed."""
@@ -400,7 +766,14 @@ class SQLiteTaskRepository:
 
         return self._fetch_one("SELECT * FROM tasks ORDER BY id DESC LIMIT 1")
 
-    def start_run(self, task_id: int, run_id: str, attempt: int) -> bool:
+    def start_run(
+        self,
+        task_id: int,
+        run_id: str,
+        attempt: int,
+        lease_id: Optional[str] = None,
+        lease_epoch: Optional[int] = None,
+    ) -> bool:
         """Create one idempotent live-output run and prune old finished runs."""
 
         if not run_id:
@@ -410,12 +783,13 @@ class SQLiteTaskRepository:
         now = self._now()
         with self._connect() as con:
             con.execute("BEGIN IMMEDIATE")
-            task_exists = con.execute(
-                "SELECT 1 FROM tasks WHERE id = ?",
-                (task_id,),
-            ).fetchone()
-            if task_exists is None:
-                raise TaskRepositoryError(f"Unknown task id: {task_id}")
+            self._validate_run_owner(
+                con,
+                task_id,
+                run_id,
+                lease_id,
+                lease_epoch,
+            )
 
             existing = con.execute(
                 "SELECT task_id, attempt FROM task_runs WHERE run_id = ?",
@@ -444,6 +818,8 @@ class SQLiteTaskRepository:
         run_id: str,
         sequence: int,
         text: str,
+        lease_id: Optional[str] = None,
+        lease_epoch: Optional[int] = None,
     ) -> bool:
         """Append one ordered chunk and compact the run inside one transaction."""
 
@@ -457,6 +833,13 @@ class SQLiteTaskRepository:
         now = self._now()
         with self._connect() as con:
             con.execute("BEGIN IMMEDIATE")
+            self._validate_run_owner(
+                con,
+                task_id,
+                run_id,
+                lease_id,
+                lease_epoch,
+            )
             run = con.execute(
                 """
                 SELECT task_id, status, last_event_sequence,
@@ -506,6 +889,14 @@ class SQLiteTaskRepository:
                 """,
                 (sequence, dropped_prefix_chars, now, run_id),
             )
+            con.execute(
+                """
+                UPDATE tasks
+                SET last_output_at = ?, updated_at = ?
+                WHERE id = ? AND status = 'RUNNING' AND active_run_id = ?
+                """,
+                (now, now, task_id, run_id),
+            )
             self._compact_run_output(con, run_id)
             return True
 
@@ -516,6 +907,8 @@ class SQLiteTaskRepository:
         sequence: int,
         status: str,
         returncode: Optional[int],
+        lease_id: Optional[str] = None,
+        lease_epoch: Optional[int] = None,
     ) -> bool:
         """Finalize a run once while accepting an identical replay."""
 
@@ -526,6 +919,13 @@ class SQLiteTaskRepository:
         now = self._now()
         with self._connect() as con:
             con.execute("BEGIN IMMEDIATE")
+            self._validate_run_owner(
+                con,
+                task_id,
+                run_id,
+                lease_id,
+                lease_epoch,
+            )
             run = con.execute(
                 """
                 SELECT task_id, status, returncode, last_event_sequence
@@ -732,6 +1132,60 @@ class SQLiteTaskRepository:
             con.execute("DELETE FROM task_output_chunks WHERE run_id = ?", (stale_run_id,))
             con.execute("DELETE FROM task_runs WHERE run_id = ?", (stale_run_id,))
 
+    @staticmethod
+    def _ensure_task_lease_columns(con: sqlite3.Connection) -> None:
+        """Add local supervisor columns to databases created before issue #11."""
+
+        existing = {
+            str(row[1]) for row in con.execute("PRAGMA table_info(tasks)").fetchall()
+        }
+        definitions = {
+            "active_run_id": "TEXT",
+            "lease_id": "TEXT",
+            "lease_owner": "TEXT",
+            "lease_epoch": "INTEGER NOT NULL DEFAULT 0",
+            "lease_expires_at": "TEXT",
+            "started_at": "TEXT",
+            "heartbeat_at": "TEXT",
+            "last_output_at": "TEXT",
+            "cancel_requested_at": "TEXT",
+            "terminal_reason": "TEXT",
+        }
+        for column, definition in definitions.items():
+            if column not in existing:
+                con.execute(f"ALTER TABLE tasks ADD COLUMN {column} {definition}")
+
+    @staticmethod
+    def _validate_run_owner(
+        con: sqlite3.Connection,
+        task_id: int,
+        run_id: str,
+        lease_id: Optional[str],
+        lease_epoch: Optional[int],
+    ) -> None:
+        """Fence live-run writes when a supervisor claim is supplied."""
+
+        if (lease_id is None) != (lease_epoch is None):
+            raise TaskRepositoryError("lease_id and lease_epoch must be supplied together")
+        if lease_id is None:
+            exists = con.execute(
+                "SELECT 1 FROM tasks WHERE id = ?",
+                (task_id,),
+            ).fetchone()
+        else:
+            exists = con.execute(
+                """
+                SELECT 1 FROM tasks
+                WHERE id = ? AND status = 'RUNNING' AND active_run_id = ?
+                  AND lease_id = ? AND lease_epoch = ?
+                """,
+                (task_id, run_id, lease_id, lease_epoch),
+            ).fetchone()
+        if exists is None:
+            if lease_id is None:
+                raise TaskRepositoryError(f"Unknown task id: {task_id}")
+            raise TaskRepositoryError("Runner event claim ownership was lost")
+
     def _update_where(
         self,
         task_id: int,
@@ -822,6 +1276,67 @@ class TaskApplicationService:
         self.initialize()
         return self.repository.next_runnable(self._now())
 
+    def claim_next_task(
+        self,
+        *,
+        worker_id: str,
+        lease_id: str,
+        run_id: str,
+        lease_expires_at: str,
+    ) -> Optional[TaskClaim]:
+        self.initialize()
+        return self.repository.claim_next(
+            now=self._now(),
+            lease_expires_at=lease_expires_at,
+            worker_id=worker_id,
+            lease_id=lease_id,
+            run_id=run_id,
+        )
+
+    def heartbeat_task_claim(
+        self,
+        claim: TaskClaim,
+        lease_expires_at: str,
+    ) -> bool:
+        self.initialize()
+        return self.repository.heartbeat_claim(
+            claim.task.id,
+            claim.lease_id,
+            claim.lease_epoch,
+            self._now(),
+            lease_expires_at,
+        )
+
+    def finish_task_claim(
+        self,
+        claim: TaskClaim,
+        status: str,
+        terminal_reason: str,
+        **fields: object,
+    ) -> bool:
+        self.initialize()
+        return self.repository.finish_claim(
+            claim.task.id,
+            claim.lease_id,
+            claim.lease_epoch,
+            status,
+            terminal_reason,
+            **fields,
+        )
+
+    def request_task_cancellation(self, claim: TaskClaim, reason: str) -> bool:
+        self.initialize()
+        return self.repository.request_claim_cancellation(
+            claim.task.id,
+            claim.lease_id,
+            claim.lease_epoch,
+            reason,
+        )
+
+    def recover_stale_task_claims(self) -> list[int]:
+        self.initialize()
+        return self.repository.recover_stale_claims(self._now())
+
     def update_task(self, task_id: int, **fields: object) -> bool:
         self.initialize()
         return self.repository.update(task_id, **fields)
@@ -854,9 +1369,22 @@ class TaskApplicationService:
             return self.repository.latest()
         return self.repository.get(task_id)
 
-    def start_task_run(self, task_id: int, run_id: str, attempt: int) -> bool:
+    def start_task_run(
+        self,
+        task_id: int,
+        run_id: str,
+        attempt: int,
+        claim: Optional[TaskClaim] = None,
+    ) -> bool:
         self.initialize()
-        return self.repository.start_run(task_id, run_id, attempt)
+        lease_id, lease_epoch = self._run_fence(task_id, run_id, claim)
+        return self.repository.start_run(
+            task_id,
+            run_id,
+            attempt,
+            lease_id,
+            lease_epoch,
+        )
 
     def append_live_output(
         self,
@@ -864,9 +1392,18 @@ class TaskApplicationService:
         run_id: str,
         sequence: int,
         text: str,
+        claim: Optional[TaskClaim] = None,
     ) -> bool:
         self.initialize()
-        return self.repository.append_run_output(task_id, run_id, sequence, text)
+        lease_id, lease_epoch = self._run_fence(task_id, run_id, claim)
+        return self.repository.append_run_output(
+            task_id,
+            run_id,
+            sequence,
+            text,
+            lease_id,
+            lease_epoch,
+        )
 
     def finish_task_run(
         self,
@@ -875,15 +1412,31 @@ class TaskApplicationService:
         sequence: int,
         status: str,
         returncode: Optional[int],
+        claim: Optional[TaskClaim] = None,
     ) -> bool:
         self.initialize()
+        lease_id, lease_epoch = self._run_fence(task_id, run_id, claim)
         return self.repository.finish_run(
             task_id,
             run_id,
             sequence,
             status,
             returncode,
+            lease_id,
+            lease_epoch,
         )
+
+    @staticmethod
+    def _run_fence(
+        task_id: int,
+        run_id: str,
+        claim: Optional[TaskClaim],
+    ) -> tuple[Optional[str], Optional[int]]:
+        if claim is None:
+            return None, None
+        if claim.task.id != task_id or claim.run_id != run_id:
+            raise TaskRepositoryError("Task claim does not match the live run")
+        return claim.lease_id, claim.lease_epoch
 
     def live_output(
         self,

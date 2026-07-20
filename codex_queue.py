@@ -37,17 +37,21 @@ from typing import Optional
 import uuid
 
 from approval_policy import default_policy
+from process_control import RunCancellation
 from pty_runner import PtyRunnerConfig, run_pty_command
 from runner_events import PersistentRunnerEventSink
+from runtime_contracts import RunnerEventSink, RunnerLifecycle
 from subprocess_runner import run_subprocess_command
 from task_services import (
     TASK_STATUSES,
     SQLiteTaskRepository,
     TaskApplicationService,
+    TaskClaim,
     TaskRecord,
 )
 from telegram_bridge import TelegramApprovalBridge, TelegramBridgeConfig, TelegramBridgeError
 from telegram_dispatcher import ApprovalDecisionProvider, StandaloneTelegramApprovalRuntime
+from worker_supervisor import DurableWorkerSupervisor
 
 
 DB_PATH = "codex_tasks.db"
@@ -347,6 +351,9 @@ def finish_task_from_output(
     output: str,
     returncode: int,
     task_service: Optional[TaskApplicationService] = None,
+    claim: Optional[TaskClaim] = None,
+    lifecycle: Optional[RunnerLifecycle] = None,
+    cancellation_reason: Optional[str] = None,
 ) -> None:
     """
     Convert runner output into final queue state.
@@ -372,10 +379,29 @@ def finish_task_from_output(
     found_session_id = extract_session_id(output) or task["session_id"]
     reset_at = extract_reset_at(output)
 
+    def finish(status: str, reason: str, **fields: object) -> None:
+        if claim is None:
+            tasks.update_task(task_id, status=status, **fields)
+            return
+        if not tasks.finish_task_claim(claim, status, reason, **fields):
+            raise RuntimeError(f"Task #{task_id} claim ownership was lost")
+
+    if lifecycle == RunnerLifecycle.CANCELLED:
+        reason = cancellation_reason or "Task execution was cancelled by the operator."
+        finish(
+            "CANCELLED",
+            reason,
+            output=output,
+            session_id=found_session_id,
+            last_error=reason,
+        )
+        print(f"Task #{task_id} cancelled.")
+        return
+
     if returncode == 0:
-        tasks.update_task(
-            task_id,
-            status="COMPLETED",
+        finish(
+            "COMPLETED",
+            "Runner completed successfully.",
             output=output,
             session_id=found_session_id,
             reset_at=None,
@@ -388,9 +414,9 @@ def finish_task_from_output(
         if not reset_at:
             reset_at = (utc_now() + dt.timedelta(hours=DEFAULT_RETRY_HOURS)).isoformat()
 
-        tasks.update_task(
-            task_id,
-            status="WAITING_LIMIT",
+        finish(
+            "WAITING_LIMIT",
+            "Codex usage limit reached.",
             output=output,
             session_id=found_session_id,
             reset_at=reset_at,
@@ -401,11 +427,11 @@ def finish_task_from_output(
         print(f"It will resume after: {reset_at}")
         return
 
-    attempts_after_run = int(task["attempts"]) + 1
+    attempts_after_run = int(task["attempts"]) + (0 if claim is not None else 1)
     if attempts_after_run < int(task["max_attempts"]):
-        tasks.update_task(
-            task_id,
-            status="PENDING",
+        finish(
+            "PENDING",
+            "Runner failed; retry remains available.",
             output=output,
             session_id=found_session_id,
             last_error=output[-3000:],
@@ -413,9 +439,9 @@ def finish_task_from_output(
         print(f"Task #{task_id} failed, but it will be retried.")
         return
 
-    tasks.update_task(
-        task_id,
-        status="FAILED",
+    finish(
+        "FAILED",
+        "Runner failed and exhausted retry attempts.",
         output=output,
         session_id=found_session_id,
         last_error=output[-3000:],
@@ -426,6 +452,9 @@ def finish_task_from_output(
 def run_codex_subprocess(
     task: TaskRecord,
     task_service: Optional[TaskApplicationService] = None,
+    claim: Optional[TaskClaim] = None,
+    cancellation: Optional[RunCancellation] = None,
+    event_observer: Optional[RunnerEventSink] = None,
 ) -> None:
     """
     Run one task using incremental subprocess output capture.
@@ -443,16 +472,24 @@ def run_codex_subprocess(
     task_id = int(task["id"])
     tasks = task_service or get_task_service()
     cmd = build_codex_command(task)
-    attempt = int(task["attempts"]) + 1
-    run_id = uuid.uuid4().hex
-    event_sink = PersistentRunnerEventSink(tasks, task_id, run_id, attempt)
-
-    tasks.update_task(
+    attempt = int(task["attempts"]) + (0 if claim is not None else 1)
+    run_id = claim.run_id if claim is not None else uuid.uuid4().hex
+    event_sink = PersistentRunnerEventSink(
+        tasks,
         task_id,
-        status="RUNNING",
-        attempts=attempt,
-        last_error=None,
+        run_id,
+        attempt,
+        observer=event_observer,
+        claim=claim,
     )
+
+    if claim is None:
+        tasks.update_task(
+            task_id,
+            status="RUNNING",
+            attempts=attempt,
+            last_error=None,
+        )
 
     print(f"\nStarting task #{task_id}: {task['title']}")
     print("Runner mode: subprocess")
@@ -460,22 +497,42 @@ def run_codex_subprocess(
     print("Command:", " ".join(cmd))
 
     try:
-        result = run_subprocess_command(
-            cmd,
-            task_id=task_id,
-            cwd=task["workdir"],
-            event_sink=event_sink,
-            run_id=run_id,
+        runner_kwargs = {
+            "task_id": task_id,
+            "cwd": task["workdir"],
+            "event_sink": event_sink,
+            "run_id": run_id,
+        }
+        if cancellation is not None:
+            runner_kwargs["cancellation"] = cancellation
+        result = run_subprocess_command(cmd, **runner_kwargs)
+        lifecycle = (
+            result.lifecycle
+            if isinstance(result.lifecycle, RunnerLifecycle)
+            else RunnerLifecycle.COMPLETED
+            if int(result.returncode) == 0
+            else RunnerLifecycle.FAILED
         )
         finish_task_from_output(
             task,
             output=result.output,
             returncode=int(result.returncode),
             task_service=tasks,
+            claim=claim,
+            lifecycle=lifecycle,
+            cancellation_reason=cancellation.reason if cancellation is not None else None,
         )
     except Exception as exc:
         error = finalize_failed_live_run(event_sink, exc)
-        tasks.update_task(task_id, status="FAILED", last_error=error)
+        if claim is None:
+            tasks.update_task(task_id, status="FAILED", last_error=error)
+        else:
+            tasks.finish_task_claim(
+                claim,
+                "FAILED",
+                "Runner raised an exception.",
+                last_error=error,
+            )
         print(f"Task #{task_id} error: {error}")
 
 
@@ -590,6 +647,9 @@ def run_codex_pty(
     echo_output: bool,
     task_service: Optional[TaskApplicationService] = None,
     approval_provider: Optional[ApprovalDecisionProvider] = None,
+    claim: Optional[TaskClaim] = None,
+    cancellation: Optional[RunCancellation] = None,
+    event_observer: Optional[RunnerEventSink] = None,
 ) -> None:
     """
     Run one task using the PTY approval bridge.
@@ -616,16 +676,24 @@ def run_codex_pty(
     task_id = int(task["id"])
     tasks = task_service or get_task_service()
     cmd = build_codex_command(task)
-    attempt = int(task["attempts"]) + 1
-    run_id = uuid.uuid4().hex
-    event_sink = PersistentRunnerEventSink(tasks, task_id, run_id, attempt)
-
-    tasks.update_task(
+    attempt = int(task["attempts"]) + (0 if claim is not None else 1)
+    run_id = claim.run_id if claim is not None else uuid.uuid4().hex
+    event_sink = PersistentRunnerEventSink(
+        tasks,
         task_id,
-        status="RUNNING",
-        attempts=attempt,
-        last_error=None,
+        run_id,
+        attempt,
+        observer=event_observer,
+        claim=claim,
     )
+
+    if claim is None:
+        tasks.update_task(
+            task_id,
+            status="RUNNING",
+            attempts=attempt,
+            last_error=None,
+        )
 
     print(f"\nStarting task #{task_id}: {task['title']}")
     print("Runner mode: pty")
@@ -643,17 +711,20 @@ def run_codex_pty(
             active_provider = runtime.start()
 
         try:
-            result = run_pty_command(
-                cmd=cmd,
-                cwd=task["workdir"],
-                task=task_to_dict(task),
-                policy=default_policy(),
-                approval_provider=active_provider,
-                telegram_verbosity=telegram_verbosity,
-                config=PtyRunnerConfig(echo_output=echo_output),
-                event_sink=event_sink,
-                run_id=run_id,
-            )
+            runner_kwargs = {
+                "cmd": cmd,
+                "cwd": task["workdir"],
+                "task": task_to_dict(task),
+                "policy": default_policy(),
+                "approval_provider": active_provider,
+                "telegram_verbosity": telegram_verbosity,
+                "config": PtyRunnerConfig(echo_output=echo_output),
+                "event_sink": event_sink,
+                "run_id": run_id,
+            }
+            if cancellation is not None:
+                runner_kwargs["cancellation"] = cancellation
+            result = run_pty_command(**runner_kwargs)
         finally:
             if runtime is not None:
                 runtime.close()
@@ -662,14 +733,33 @@ def run_codex_pty(
             output=result.output,
             returncode=result.returncode,
             task_service=tasks,
+            claim=claim,
+            lifecycle=result.lifecycle,
+            cancellation_reason=cancellation.reason if cancellation is not None else None,
         )
     except TelegramBridgeError as exc:
         error = finalize_failed_live_run(event_sink, exc)
-        tasks.update_task(task_id, status="FAILED", last_error=error)
+        if claim is None:
+            tasks.update_task(task_id, status="FAILED", last_error=error)
+        else:
+            tasks.finish_task_claim(
+                claim,
+                "FAILED",
+                "Telegram configuration failed.",
+                last_error=error,
+            )
         print(f"Telegram configuration error for task #{task_id}: {error}")
     except Exception as exc:
         error = finalize_failed_live_run(event_sink, exc)
-        tasks.update_task(task_id, status="FAILED", last_error=error)
+        if claim is None:
+            tasks.update_task(task_id, status="FAILED", last_error=error)
+        else:
+            tasks.finish_task_claim(
+                claim,
+                "FAILED",
+                "PTY runner raised an exception.",
+                last_error=error,
+            )
         print(f"Task #{task_id} PTY error: {error}")
 
 
@@ -681,6 +771,9 @@ def run_task(
     echo_output: bool,
     task_service: Optional[TaskApplicationService] = None,
     approval_provider: Optional[ApprovalDecisionProvider] = None,
+    claim: Optional[TaskClaim] = None,
+    cancellation: Optional[RunCancellation] = None,
+    event_observer: Optional[RunnerEventSink] = None,
 ) -> None:
     """
     Dispatch a task to the selected runner implementation.
@@ -708,17 +801,34 @@ def run_task(
 
     tasks = task_service or get_task_service()
     if runner_mode == "pty":
-        run_codex_pty(
-            task,
-            telegram_enabled=telegram_enabled,
-            telegram_verbosity=telegram_verbosity,
-            echo_output=echo_output,
-            task_service=tasks,
-            approval_provider=approval_provider,
-        )
+        runner_kwargs = {
+            "telegram_enabled": telegram_enabled,
+            "telegram_verbosity": telegram_verbosity,
+            "echo_output": echo_output,
+            "task_service": tasks,
+            "approval_provider": approval_provider,
+        }
+        if claim is not None:
+            runner_kwargs.update(
+                {
+                    "claim": claim,
+                    "cancellation": cancellation,
+                    "event_observer": event_observer,
+                }
+            )
+        run_codex_pty(task, **runner_kwargs)
         return
 
-    run_codex_subprocess(task, task_service=tasks)
+    runner_kwargs = {"task_service": tasks}
+    if claim is not None:
+        runner_kwargs.update(
+            {
+                "claim": claim,
+                "cancellation": cancellation,
+                "event_observer": event_observer,
+            }
+        )
+    run_codex_subprocess(task, **runner_kwargs)
 
 
 def worker_loop(
@@ -752,28 +862,25 @@ def worker_loop(
     """
 
     tasks = get_task_service()
-    tasks.initialize()
 
-    while True:
-        task = tasks.next_runnable_task()
-
-        if not task:
-            if stop_when_empty:
-                print("No executable tasks found. Exiting.")
-                return
-
-            print(f"No task ready. Checking again in {check_interval} seconds.")
-            time.sleep(check_interval)
-            continue
-
+    def execute(claim, cancellation, observe) -> None:
         run_task(
-            task,
+            claim.task,
             runner_mode=runner_mode,
             telegram_enabled=telegram_enabled,
             telegram_verbosity=telegram_verbosity,
             echo_output=echo_output,
             task_service=tasks,
+            claim=claim,
+            cancellation=cancellation,
+            event_observer=observe,
         )
+
+    supervisor = DurableWorkerSupervisor(tasks, execute, notify=print)
+    supervisor.run(
+        stop_when_empty=stop_when_empty,
+        check_interval=check_interval,
+    )
 
 
 def seed_example_tasks(workdir: str = ".") -> None:

@@ -23,7 +23,7 @@ import time
 from typing import Callable, Optional
 
 import codex_queue
-from runtime_contracts import TelegramTransport
+from runtime_contracts import TelegramTransport, WorkerSnapshot
 from task_services import TaskApplicationService, TaskRecord
 from telegram_bridge import (
     DEFAULT_TELEGRAM_FILE_MAX_BYTES,
@@ -39,6 +39,7 @@ from telegram_dispatcher import (
 )
 from voice_commands import ALIASABLE_ACTIONS, VoiceCommand, VoiceCommandError, normalize_transcript, parse_voice_command
 from voice_transcriber import VoiceTranscriber, VoiceTranscriptionError, build_voice_transcriber
+from worker_supervisor import DurableWorkerSupervisor
 
 
 DEFAULT_TASK_LIMIT = 10
@@ -60,6 +61,10 @@ LEARN_ACTION_ALIASES = {
     "avvia": "run",
     "stop": "stop",
     "ferma": "stop",
+    "stop-current": "stop_current",
+    "stop_current": "stop_current",
+    "annulla": "stop_current",
+    "interrompi": "stop_current",
 }
 
 DEFAULT_VOICE_MAX_DURATION_SECONDS = 300
@@ -164,6 +169,7 @@ class WorkerState:
     thread: Optional[threading.Thread] = None
     stop_after_current: bool = False
     last_error: Optional[str] = None
+    supervisor: Optional[DurableWorkerSupervisor] = None
 
     def is_running(self) -> bool:
         """
@@ -174,6 +180,8 @@ class WorkerState:
         """
 
         with self.lock:
+            if self.supervisor is not None:
+                return self.supervisor.snapshot().running
             return self.thread is not None and self.thread.is_alive()
 
 
@@ -810,6 +818,7 @@ def format_status(
     worker_running: bool,
     last_error: Optional[str],
     task_service: Optional[TaskApplicationService] = None,
+    worker_snapshot: Optional[WorkerSnapshot] = None,
 ) -> str:
     """
     Build a compact status message.
@@ -826,6 +835,19 @@ def format_status(
 
     counts = task_counts(task_service)
     parts = ["Durex status", f"Worker: {'running' if worker_running else 'idle'}"]
+    if worker_snapshot is not None and worker_snapshot.current_task_id is not None:
+        parts.append(f"Current task: #{worker_snapshot.current_task_id}")
+        parts.append(f"Run: {worker_snapshot.current_run_id}")
+        if worker_snapshot.started_at:
+            parts.append(f"Started at: {worker_snapshot.started_at}")
+        if worker_snapshot.last_output_at:
+            parts.append(f"Last output at: {worker_snapshot.last_output_at}")
+        parts.append(
+            "Pending interaction: "
+            f"{'yes' if worker_snapshot.pending_interaction else 'no'}"
+        )
+    if worker_snapshot is not None and worker_snapshot.stop_after_current:
+        parts.append("Stop after current: requested")
     for status in sorted(codex_queue.STATUSES):
         parts.append(f"{status}: {counts.get(status, 0)}")
     if last_error:
@@ -916,7 +938,15 @@ def build_tasks_keyboard(rows: list[TaskRecord]) -> dict:
         [
             {"text": "Refresh", "callback_data": "durextasks:refresh"},
             {"text": "Run", "callback_data": "durexcontrol:run"},
-            {"text": "Stop", "callback_data": "durexcontrol:stop"},
+        ]
+    )
+    task_buttons.append(
+        [
+            {"text": "Stop After", "callback_data": "durexcontrol:stop"},
+            {
+                "text": "Stop Current",
+                "callback_data": "durexcontrol:stop-current",
+            },
         ]
     )
     return {"inline_keyboard": task_buttons}
@@ -964,7 +994,11 @@ def task_detail(
             ],
             [
                 {"text": "Run", "callback_data": "durexcontrol:run"},
-                {"text": "Stop", "callback_data": "durexcontrol:stop"},
+                {"text": "Stop After", "callback_data": "durexcontrol:stop"},
+                {
+                    "text": "Stop Current",
+                    "callback_data": "durexcontrol:stop-current",
+                },
             ],
         ]
     }
@@ -1029,29 +1063,30 @@ def run_worker_until_empty(
 
     try:
         tasks = task_service or codex_queue.get_task_service()
-        tasks.initialize()
-        while True:
-            with state.lock:
-                if state.stop_after_current:
-                    state.stop_after_current = False
-                    notify("Worker stopped before starting another task.")
-                    return
 
-            task = tasks.next_runnable_task()
-            if task is None:
-                notify("No executable tasks found. Worker is idle.")
-                return
-
-            notify(f"Starting task #{task['id']}: {task['title']}")
+        def execute(claim, cancellation, observe) -> None:
             codex_queue.run_task(
-                task,
+                claim.task,
                 runner_mode=config.runner_mode,
                 telegram_enabled=config.worker_telegram_approvals,
                 telegram_verbosity=config.telegram_verbosity,
                 echo_output=config.echo_output,
                 task_service=tasks,
                 approval_provider=approval_provider,
+                claim=claim,
+                cancellation=cancellation,
+                event_observer=observe,
             )
+
+        supervisor = DurableWorkerSupervisor(tasks, execute, notify=notify)
+        with state.lock:
+            state.supervisor = supervisor
+            if state.stop_after_current:
+                supervisor.request_stop_after_current()
+                state.stop_after_current = False
+        supervisor.run(stop_when_empty=True, check_interval=0)
+        with state.lock:
+            state.last_error = supervisor.snapshot().last_error
     except Exception as exc:
         with state.lock:
             state.last_error = str(exc)
@@ -1135,6 +1170,12 @@ class TelegramControlBot:
                 timeout_seconds=self.bridge.config.approval_timeout_seconds,
                 timeout_default=self.bridge.config.timeout_default_decision,
             )
+        self.supervisor = DurableWorkerSupervisor(
+            self.task_service,
+            self._execute_claim,
+            notify=self.send,
+        )
+        self.worker_state.supervisor = self.supervisor
         self.update_dispatcher = TelegramUpdateDispatcher(
             transport=self.bridge,
             approval_broker=self.approval_broker,
@@ -1318,6 +1359,22 @@ class TelegramControlBot:
         with self.worker_state.lock:
             self.worker_state.last_error = str(error)
 
+    def _execute_claim(self, claim, cancellation, observe) -> None:
+        """Execute one supervisor-owned claim with the configured runner."""
+
+        codex_queue.run_task(
+            claim.task,
+            runner_mode=self.config.runner_mode,
+            telegram_enabled=self.config.worker_telegram_approvals,
+            telegram_verbosity=self.config.telegram_verbosity,
+            echo_output=self.config.echo_output,
+            task_service=self.task_service,
+            approval_provider=self.approval_provider,
+            claim=claim,
+            cancellation=cancellation,
+            event_observer=observe,
+        )
+
     def build_voice_learn_keyboard(self, phrase: str) -> dict:
         """
         Build an inline keyboard for learning one transcript candidate.
@@ -1349,6 +1406,10 @@ class TelegramControlBot:
                 ],
                 [
                     {"text": "Learn Stop", "callback_data": f"durexlearn:{token}:stop"},
+                    {
+                        "text": "Learn Stop Current",
+                        "callback_data": f"durexlearn:{token}:stop_current",
+                    },
                 ],
             ]
         }
@@ -1527,25 +1588,10 @@ class TelegramControlBot:
         """
 
         with self.worker_state.lock:
-            if self.worker_state.thread is not None and self.worker_state.thread.is_alive():
-                return "Worker is already running."
-
             self.worker_state.last_error = None
-            self.worker_state.stop_after_current = False
-            thread = threading.Thread(
-                target=run_worker_until_empty,
-                args=(
-                    self.worker_state,
-                    self.config,
-                    self.send,
-                    self.task_service,
-                    self.approval_provider,
-                ),
-                daemon=True,
-            )
-            self.worker_state.thread = thread
-            thread.start()
-            return "Worker started."
+        if not self.supervisor.start(stop_when_empty=True, check_interval=0):
+            return "Worker is already running."
+        return "Worker started."
 
     def stop_worker_after_current(self) -> str:
         """
@@ -1555,9 +1601,15 @@ class TelegramControlBot:
             Human-readable acknowledgement for Telegram.
         """
 
-        with self.worker_state.lock:
-            self.worker_state.stop_after_current = True
+        self.supervisor.request_stop_after_current()
         return "Worker will stop before starting another task."
+
+    def stop_current_task(self) -> str:
+        """Cancel the current supervisor-owned Codex process group."""
+
+        if not self.supervisor.request_stop_current("Remote operator requested cancellation."):
+            return "No running task to cancel."
+        return "Current task cancellation requested."
 
     def add_task_from_values(self, title: str, prompt: str, workdir: str, priority: int = 100, max_attempts: int = 3) -> str:
         """
@@ -1607,10 +1659,12 @@ class TelegramControlBot:
         """
 
         if command.action == "status":
+            snapshot = self.supervisor.snapshot()
             return format_status(
-                self.worker_state.is_running(),
-                self.worker_state.last_error,
+                snapshot.running,
+                snapshot.last_error or self.worker_state.last_error,
                 self.task_service,
+                snapshot,
             )
         if command.action == "tasks":
             return self.prepare_tasks_view(limit=command.limit or DEFAULT_TASK_LIMIT)
@@ -1620,6 +1674,8 @@ class TelegramControlBot:
             return self.start_worker()
         if command.action == "stop":
             return self.stop_worker_after_current()
+        if command.action == "stop_current":
+            return self.stop_current_task()
         if command.action == "add_wizard":
             return self.start_add_wizard()
         if command.action == "add":
@@ -1658,10 +1714,12 @@ class TelegramControlBot:
             return HELP_TEXT
 
         if command == "/status" and len(parts) == 1:
+            snapshot = self.supervisor.snapshot()
             return format_status(
-                self.worker_state.is_running(),
-                self.worker_state.last_error,
+                snapshot.running,
+                snapshot.last_error or self.worker_state.last_error,
                 self.task_service,
+                snapshot,
             )
 
         if command == "/tasks":
@@ -1704,6 +1762,9 @@ class TelegramControlBot:
 
         if command in {"/stop", "/stop-worker"} and len(parts) == 1:
             return self.stop_worker_after_current()
+
+        if command == "/stop-current" and len(parts) == 1:
+            return self.stop_current_task()
 
         return "Unknown command. Send /help."
 
@@ -1789,6 +1850,12 @@ class TelegramControlBot:
             response = self.stop_worker_after_current()
             if callback_id and hasattr(self.bridge, "answer_callback_query"):
                 self.bridge.answer_callback_query(str(callback_id), text="Stop requested")
+            return response
+
+        if data == "durexcontrol:stop-current":
+            response = self.stop_current_task()
+            if callback_id and hasattr(self.bridge, "answer_callback_query"):
+                self.bridge.answer_callback_query(str(callback_id), text="Cancel requested")
             return response
 
         if data == "durexconfig:voice_debug":
@@ -2215,7 +2282,8 @@ Prompt text for Codex...
 /run - start the Durex worker until the queue is empty
 /tail [task_id] - show task output tail
 /stop - stop worker before the next task starts
-/learn <status|tasks|tail|run|stop> <spoken phrase> - save a voice alias
+/stop-current - cancel the current Codex task
+/learn <status|tasks|tail|run|stop|stop-current> <spoken phrase> - save a voice alias
 /add-wizard - add a task with buttons
 /config - show runtime toggles
 
